@@ -5,6 +5,8 @@ import {
   createChart,
   type IChartApi,
   type ISeriesApi,
+  CandlestickSeries,
+  HistogramSeries,
   type CandlestickData,
   type HistogramData,
   type Time,
@@ -90,13 +92,22 @@ export default function GoldChart({ data }: GoldChartProps) {
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const [isConnected, setIsConnected] = useReducer((_: boolean, v: boolean | ((p: boolean) => boolean)) => typeof v === 'function' ? v(false) : v, false);
+  const [isConnected, setIsConnected] = useReducer(
+    (_: boolean, v: boolean | ((p: boolean) => boolean)) => (typeof v === 'function' ? v(false) : v),
+    false
+  );
   const [lastUpdate, setLastUpdate] = useReducer((_: Date | null, v: Date | null) => v, null);
-  const [state, dispatch] = useReducer((prev: ChartState, action: ChartState) => action, data, computeInitialState);
+  const [state, dispatch] = useReducer(
+    (prev: ChartState, action: ChartState) => action,
+    data,
+    computeInitialState
+  );
 
   const currentPriceRef = useRef<number>(0);
   const stateRef = useRef<ChartState>(state);
-  useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // Keep state in sync when data prop changes
   useEffect(() => {
@@ -153,7 +164,8 @@ export default function GoldChart({ data }: GoldChartProps) {
 
     chartRef.current = chart;
 
-    const candleSeries = chart.addCandlestickSeries({
+    // lightweight-charts v5 API: chart.addSeries(SeriesType, options)
+    const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#26a69a',
       downColor: '#ef5350',
       borderUpColor: '#26a69a',
@@ -163,7 +175,7 @@ export default function GoldChart({ data }: GoldChartProps) {
     });
     candleSeriesRef.current = candleSeries;
 
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
     });
@@ -217,17 +229,14 @@ export default function GoldChart({ data }: GoldChartProps) {
     };
   }, [initChart]);
 
-  // WebSocket for real-time updates
+  // WebSocket for real-time updates (Binance Futures)
   useEffect(() => {
     const connectWebSocket = () => {
       if (wsRef.current) {
         wsRef.current.close();
       }
 
-      // Binance Futures WebSocket for XAUUSDT
-      const ws = new WebSocket(
-        'wss://fstream.binance.com/ws/xauusdt@kline_3m'
-      );
+      const ws = new WebSocket('wss://fstream.binance.com/ws/xauusdt@kline_3m');
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -245,16 +254,14 @@ export default function GoldChart({ data }: GoldChartProps) {
           const close = parseFloat(k.c);
           const volume = parseFloat(k.v);
 
-          const candleUpdate: CandlestickData = {
-            time: time as Time,
-            open,
-            high,
-            low,
-            close,
-          };
-
           if (candleSeriesRef.current) {
-            candleSeriesRef.current.update(candleUpdate);
+            candleSeriesRef.current.update({
+              time: time as Time,
+              open,
+              high,
+              low,
+              close,
+            });
           }
 
           if (volumeSeriesRef.current) {
@@ -273,9 +280,8 @@ export default function GoldChart({ data }: GoldChartProps) {
             ? currentState.prevCandle.open
             : open;
           const curHigh = Math.max(currentState.high24h, high);
-          const curLow = currentState.low24h === 0
-            ? low
-            : Math.min(currentState.low24h, low);
+          const curLow =
+            currentState.low24h === 0 ? low : Math.min(currentState.low24h, low);
 
           dispatch({
             currentPrice: close,
@@ -288,7 +294,7 @@ export default function GoldChart({ data }: GoldChartProps) {
             volume24h: currentState.volume24h,
             prevCandle: currentState.prevCandle,
           });
-        } catch (err) {
+        } catch (_err) {
           // ignore parse errors
         }
       };
@@ -338,7 +344,16 @@ export default function GoldChart({ data }: GoldChartProps) {
       <div className="flex flex-wrap items-center gap-4 px-4 py-3 border-b border-zinc-800/60 bg-[#0d1117]">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-400 to-yellow-600 flex items-center justify-center">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="white"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M12 2L2 7l10 5 10-5-10-5z" />
               <path d="M2 17l10 5 10-5" />
               <path d="M2 12l10 5 10-5" />
@@ -361,7 +376,9 @@ export default function GoldChart({ data }: GoldChartProps) {
 
         <div className="flex items-center gap-6">
           <div className="text-right">
-            <div className={`text-2xl font-mono font-bold tabular-nums ${priceColorClass} transition-colors duration-200`}>
+            <div
+              className={`text-2xl font-mono font-bold tabular-nums ${priceColorClass} transition-colors duration-200`}
+            >
               {currentPrice ? formatPrice(currentPrice) : '---'}
             </div>
           </div>
@@ -386,10 +403,7 @@ export default function GoldChart({ data }: GoldChartProps) {
         <MetricItem label="Session High" value={high24h ? formatPrice(high24h) : '---'} />
         <MetricItem label="Session Low" value={low24h ? formatPrice(low24h) : '---'} />
         <MetricItem label="Volume" value={volume24h ? formatVolume(volume24h) : '---'} />
-        <MetricItem
-          label="Last Update"
-          value={lastUpdate ? lastUpdate.toLocaleTimeString() : '---'}
-        />
+        <MetricItem label="Last Update" value={lastUpdate ? lastUpdate.toLocaleTimeString() : '---'} />
       </div>
 
       {/* Chart Container */}

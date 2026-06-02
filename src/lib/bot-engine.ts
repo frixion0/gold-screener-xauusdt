@@ -8,7 +8,7 @@ import { runStrategy, getCurrentState } from './rsi';
 const BINANCE_FUTURES_URL = 'https://fapi.binance.com/fapi/v1/klines';
 const PROXY_URL = 'https://api.allorigins.win/raw?url=';
 const MUDREX_API = 'https://trade.mudrex.com/fapi/v1/futures';
-const SECRET_KEY = process.env.MUDREX_SECRET_KEY;
+const SECRET_KEY = 'v33dnrb92FKBSMTVUxJ6ufeW7cBBEmmK';
 const SYMBOL = 'XAUUSDT';
 const INTERVAL = '3m';
 const LIMIT = 200;

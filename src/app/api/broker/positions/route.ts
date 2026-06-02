@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 const MUDREX_API = 'https://trade.mudrex.com/fapi/v1/futures/positions';
-const SECRET_KEY = process.env.MUDREX_SECRET_KEY;
+const SECRET_KEY = 'v33dnrb92FKBSMTVUxJ6ufeW7cBBEmmK';
 
 export async function GET() {
   try {

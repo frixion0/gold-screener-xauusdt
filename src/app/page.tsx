@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff, Wallet, Target, AlertTriangle, DollarSign } from 'lucide-react';
+import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff, Wallet, Target, AlertTriangle, DollarSign, Power, PowerOff, X } from 'lucide-react';
 import { runStrategy } from '@/lib/rsi';
 
 const GoldChart = dynamic(() => import('@/components/GoldChart'), {
@@ -123,6 +123,17 @@ export default function Home() {
   const [brokerPositions, setBrokerPositions] = useState<MudrexPosition[]>([]);
   const [brokerError, setBrokerError] = useState<string | null>(null);
 
+  // Manual trade state
+  const [autoTrade, setAutoTrade] = useState(false);
+  const [tradeLoading, setTradeLoading] = useState(false);
+  const [tradeMsg, setTradeMsg] = useState<string | null>(null);
+  const [tradeQty, setTradeQty] = useState('0.002');
+  const [tradeLeverage, setTradeLeverage] = useState('100');
+  const [tradeSL, setTradeSL] = useState('');
+  const [tradeTP, setTradeTP] = useState('');
+  const [autoSLPct, setAutoSLPct] = useState('1');
+  const [autoTPPct, setAutoTPPct] = useState('2');
+
   const fetchKlines = useCallback(async (isBackground = false) => {
     try {
       if (!isBackground) setIsRefreshing(true);
@@ -191,6 +202,88 @@ export default function Home() {
     } catch { /* silent */ }
   }, []);
 
+  // Computed values (needed by callbacks below)
+  const latestCandle = klineData.length > 0 ? klineData[klineData.length - 1] : null;
+  const prevCandle = klineData.length > 1 ? klineData[klineData.length - 2] : null;
+
+  const placeOrder = useCallback(async (orderType: 'LONG' | 'SHORT') => {
+    setTradeLoading(true);
+    setTradeMsg(null);
+    try {
+      const price = latestCandle?.close || 0;
+      if (!price) { setTradeMsg('No price data available'); setTradeLoading(false); return; }
+      const slPrice = tradeSL ? parseFloat(tradeSL) : undefined;
+      const tpPrice = tradeTP ? parseFloat(tradeTP) : undefined;
+      const res = await fetch('/api/broker/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_type: orderType, order_price: price, quantity: parseFloat(tradeQty),
+          leverage: parseInt(tradeLeverage), trigger_type: 'MARKET',
+          is_stoploss: !!slPrice, is_takeprofit: !!tpPrice,
+          stoploss_price: slPrice, takeprofit_price: tpPrice,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setTradeMsg(`${orderType} order placed ✅ — ID: ${json.data?.order_id?.slice(0, 8)}...`);
+        setTimeout(() => fetchBroker(), 2000);
+      } else {
+        setTradeMsg(`Order failed: ${json.error}`);
+      }
+    } catch (err) {
+      setTradeMsg(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setTradeLoading(false);
+    }
+  }, [latestCandle, tradeQty, tradeLeverage, tradeSL, tradeTP, fetchBroker, klineData]);
+
+  const closePosition = useCallback(async (pos: MudrexPosition) => {
+    setTradeLoading(true);
+    setTradeMsg(null);
+    try {
+      const price = latestCandle?.close || 0;
+      if (!price) { setTradeMsg('No price data'); setTradeLoading(false); return; }
+      const closeType = pos.order_type === 'LONG' ? 'SHORT' : 'LONG';
+      const res = await fetch('/api/broker/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_type: closeType, order_price: price, quantity: parseFloat(pos.quantity), leverage: parseInt(pos.leverage) }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setTradeMsg(`Closed ${pos.order_type} ${pos.symbol} ✅`);
+        setTimeout(() => fetchBroker(), 2000);
+      } else {
+        setTradeMsg(`Close failed: ${json.error}`);
+      }
+    } catch (err) {
+      setTradeMsg(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setTradeLoading(false);
+    }
+  }, [latestCandle, fetchBroker, klineData]);
+
+  const toggleAutoTrade = useCallback(async (enable: boolean) => {
+    try {
+      const res = await fetch('/api/bot/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          autoTrade: enable, quantity: parseFloat(tradeQty), leverage: parseInt(tradeLeverage),
+          stoplossPercent: parseFloat(autoSLPct), takeprofitPercent: parseFloat(autoTPPct),
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setAutoTrade(json.autoTrade);
+        setTradeMsg(`Auto-trading ${json.autoTrade ? 'ON ✅' : 'OFF'} — Qty: ${json.quantity}, ${json.leverage}x, SL: ${json.stoplossPercent}%, TP: ${json.takeprofitPercent}%`);
+      }
+    } catch (err) {
+      setTradeMsg(`Toggle failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  }, [tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
+
   // Initial fetch
   useEffect(() => {
     fetchKlines();
@@ -206,8 +299,6 @@ export default function Home() {
   }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker]);
 
   const secondsAgo = useSecondsAgo(lastFetch);
-  const latestCandle = klineData.length > 0 ? klineData[klineData.length - 1] : null;
-  const prevCandle = klineData.length > 1 ? klineData[klineData.length - 2] : null;
   const isUp = prevCandle ? latestCandle!.close >= prevCandle.close : true;
   const nextRefreshIn = 10 - (secondsAgo % 10);
 
@@ -552,11 +643,130 @@ export default function Home() {
                           </div>
                         )}
                       </div>
-                      <div className="mt-2 pt-2 border-t border-zinc-800/20 text-[10px] text-zinc-600 font-mono">
-                        Opened: {new Date(pos.created_at).toLocaleString()}
+                      <div className="mt-2 pt-2 border-t border-zinc-800/20 flex items-center justify-between">
+                        <span className="text-[10px] text-zinc-600 font-mono">
+                          {new Date(pos.created_at).toLocaleString()}
+                        </span>
+                        <button
+                          onClick={() => closePosition(pos)}
+                          disabled={tradeLoading}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50 font-mono"
+                        >
+                          <X className="w-3 h-3" /> Close
+                        </button>
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Manual Trade Panel */}
+          <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Target className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm font-semibold">Manual Trade</span>
+                </div>
+                {tradeMsg && (
+                  <div className="flex items-center gap-1">
+                    <span className={`text-[10px] font-mono ${tradeMsg.includes('✅') ? 'text-emerald-400' : tradeMsg.includes('failed') || tradeMsg.includes('Error') ? 'text-red-400' : 'text-zinc-400'}`}>
+                      {tradeMsg}
+                    </span>
+                    <button onClick={() => setTradeMsg(null)} className="text-zinc-600 hover:text-zinc-400"><X className="w-3 h-3" /></button>
+                  </div>
+                )}
+              </div>
+
+              {/* Auto-Trade Toggle */}
+              <div className={`flex items-center justify-between p-2.5 rounded-lg border mb-3 ${autoTrade ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-zinc-900/60 border-zinc-800/40'}`}>
+                <div className="flex items-center gap-2">
+                  {autoTrade ? <Power className="w-3.5 h-3.5 text-emerald-400" /> : <PowerOff className="w-3.5 h-3.5 text-zinc-500" />}
+                  <div>
+                    <div className="text-xs font-semibold">Auto-Trade</div>
+                    <div className="text-[9px] text-zinc-500">Bot places orders on signals</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => toggleAutoTrade(!autoTrade)}
+                  disabled={tradeLoading}
+                  className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${autoTrade ? 'bg-emerald-500' : 'bg-zinc-700'} ${tradeLoading ? 'opacity-50' : ''}`}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${autoTrade ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
+
+              {/* Trade Config */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <label className="text-[9px] text-zinc-500 uppercase">Quantity</label>
+                  <input type="number" value={tradeQty} onChange={(e) => setTradeQty(e.target.value)} step="0.001" min="0.001"
+                    className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-200 focus:outline-none focus:border-purple-500/50" />
+                </div>
+                <div>
+                  <label className="text-[9px] text-zinc-500 uppercase">Leverage</label>
+                  <input type="number" value={tradeLeverage} onChange={(e) => setTradeLeverage(e.target.value)} step="1" min="1" max="200"
+                    className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-200 focus:outline-none focus:border-purple-500/50" />
+                </div>
+              </div>
+
+              {/* SL/TP for manual trade */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div>
+                  <label className="text-[9px] text-zinc-500 uppercase">Stop Loss ($)</label>
+                  <input type="number" value={tradeSL} onChange={(e) => setTradeSL(e.target.value)} step="0.01" placeholder="Optional"
+                    className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-red-500/50" />
+                </div>
+                <div>
+                  <label className="text-[9px] text-zinc-500 uppercase">Take Profit ($)</label>
+                  <input type="number" value={tradeTP} onChange={(e) => setTradeTP(e.target.value)} step="0.01" placeholder="Optional"
+                    className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-emerald-500/50" />
+                </div>
+              </div>
+
+              {/* Auto-trade SL/TP % config */}
+              {autoTrade && (
+                <div className="p-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20 mb-3">
+                  <div className="text-[9px] text-emerald-400 uppercase tracking-wider font-semibold mb-1.5">Auto-Trade SL/TP %</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] text-zinc-500">SL %</label>
+                      <input type="number" value={autoSLPct} onChange={(e) => setAutoSLPct(e.target.value)} step="0.1" min="0.1"
+                        className="w-full mt-0.5 px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-red-400 focus:outline-none focus:border-red-500/50" />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-zinc-500">TP %</label>
+                      <input type="number" value={autoTPPct} onChange={(e) => setAutoTPPct(e.target.value)} step="0.1" min="0.1"
+                        className="w-full mt-0.5 px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-500/50" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Buy/Sell Buttons */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => placeOrder('LONG')}
+                  disabled={tradeLoading}
+                  className="flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-mono font-bold text-sm hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
+                >
+                  <ArrowUpCircle className="w-4 h-4" /> LONG
+                </button>
+                <button
+                  onClick={() => placeOrder('SHORT')}
+                  disabled={tradeLoading}
+                  className="flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-red-500/20 border border-red-500/30 text-red-400 font-mono font-bold text-sm hover:bg-red-500/30 transition-colors disabled:opacity-50"
+                >
+                  <ArrowDownCircle className="w-4 h-4" /> SHORT
+                </button>
+              </div>
+
+              {tradeLoading && (
+                <div className="mt-2 flex items-center justify-center gap-1.5 text-[10px] text-zinc-500">
+                  <div className="w-3 h-3 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin" />
+                  Processing order...
                 </div>
               )}
             </CardContent>

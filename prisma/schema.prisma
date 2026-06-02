@@ -36,10 +36,15 @@ model Signal {
 }
 
 model BotState {
-  id         Int      @id @default(1)
-  position   String   @default("NEUTRAL")
-  currentRSI Float
-  currentSMA Float
-  updatedAt  DateTime @updatedAt
-  lastPing   DateTime @default(now())
+  id                Int      @id @default(1)
+  position          String   @default("NEUTRAL")
+  currentRSI        Float
+  currentSMA        Float
+  updatedAt         DateTime @updatedAt
+  lastPing          DateTime @default(now())
+  autoTrade         Boolean  @default(false)
+  quantity          Float    @default(0.002)
+  leverage          Int      @default(100)
+  stoplossPercent   Float    @default(1)
+  takeprofitPercent Float    @default(2)
 }

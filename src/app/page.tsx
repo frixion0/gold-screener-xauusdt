@@ -39,6 +39,15 @@ interface BotStatus {
   lastPing: string | null;
   lastPingAgoMs: number;
   totalSignals: number;
+  engine?: {
+    startedAt: string | null;
+    lastCheckAt: string | null;
+    nextCheckAt: string | null;
+    lastResult: string | null;
+    checkCount: number;
+    errorCount: number;
+    isRunning: boolean;
+  };
 }
 
 interface SignalRecord {
@@ -228,8 +237,8 @@ export default function Home() {
             label="Volume" value={latestCandle ? `${(klineData.reduce((s, k) => s + k.volume, 0) / 1000).toFixed(1)}K` : '---'} subtext="3m candles" />
           {/* Bot Status Cards */}
           <BotCard icon={botStatus?.active ? <Radio className="w-4 h-4 text-emerald-400" /> : <WifiOff className="w-4 h-4 text-red-400" />}
-            label="Bot Status" value={botStatus?.active ? 'ACTIVE' : botStatus ? 'OFFLINE' : '---'}
-            subtext={botStatus?.lastPing ? `Ping: ${Math.round(botStatus.lastPingAgoMs / 1000)}s ago` : 'Not started'}
+            label="Bot Engine" value={botStatus?.active ? 'AUTO-RUNNING' : botStatus ? 'OFFLINE' : '---'}
+            subtext={botStatus?.engine?.lastCheckAt ? `Last check: ${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago (${botStatus.engine.checkCount} total)` : 'Waiting to start'}
             subtextClass={botStatus?.active ? 'text-emerald-400' : 'text-red-400'} />
           <BotCard icon={<Bot className={`w-4 h-4 ${botStatus?.position === 'LONG' ? 'text-emerald-400' : botStatus?.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}`} />}
             label="Position" value={botStatus?.position || 'NEUTRAL'}
@@ -355,16 +364,16 @@ export default function Home() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-zinc-500">Interval:</span>
-                        <span className="text-yellow-400">1 minute</span>
+                        <span className="text-yellow-400">5 minutes (free tier min)</span>
                       </div>
                     </div>
                   </>
                 } />
-                <SetupStep number={3} title="Bot Runs 24/7" done={false} description={
+                <SetupStep number={3} title="Bot Runs Autonomously" done={false} description={
                   <>
-                    UptimeRobot pings <span className="text-yellow-400">/api/bot/check</span> every minute.
-                    Each ping fetches data, calculates RSI strategy, and logs buy/sell signals.
-                    Render stays awake thanks to the constant pings.
+                    The bot engine runs <span className="text-yellow-400">automatically every 3 minutes</span> — aligned with candle closes.
+                    UptimeRobot just keeps the Render server awake (prevents cold sleep).
+                    The bot works independently of the ping interval.
                   </>
                 } />
               </div>
@@ -397,7 +406,7 @@ export default function Home() {
         {/* Bottom Info */}
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-600 px-1">
           <span>RSI(1) + SMA(14) Strategy | Binance Futures | 3-minute candles</span>
-          <span>Bot endpoint: /api/bot/check (ping with UptimeRobot every 1min)</span>
+          <span>Bot endpoint: /api/bot/check (ping every 5min with UptimeRobot to keep alive)</span>
         </div>
       </main>
     </div>

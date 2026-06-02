@@ -40,14 +40,21 @@ interface BotStatus {
   lastPing: string | null;
   lastPingAgoMs: number;
   totalSignals: number;
+  autoTrade: boolean;
+  quantity: number;
+  leverage: number;
+  stoplossPercent: number;
+  takeprofitPercent: number;
   engine?: {
     startedAt: string | null;
     lastCheckAt: string | null;
     nextCheckAt: string | null;
     lastResult: string | null;
+    lastTradeResult: string | null;
     checkCount: number;
     errorCount: number;
     isRunning: boolean;
+    autoTrade: boolean;
   };
 }
 
@@ -167,7 +174,17 @@ export default function Home() {
   const fetchBotStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/bot/status');
-      if (res.ok) setBotStatus(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setBotStatus(data);
+        // Sync autoTrade state from server
+        setAutoTrade(data.autoTrade ?? false);
+        // Sync trade config from server
+        if (data.quantity) setTradeQty(String(data.quantity));
+        if (data.leverage) setTradeLeverage(String(data.leverage));
+        if (data.stoplossPercent) setAutoSLPct(String(data.stoplossPercent));
+        if (data.takeprofitPercent) setAutoTPPct(String(data.takeprofitPercent));
+      }
     } catch { /* silent */ }
   }, []);
 
@@ -283,6 +300,25 @@ export default function Home() {
       setTradeMsg(`Toggle failed: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
   }, [tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
+
+  const generateTestSignal = useCallback(async () => {
+    setTradeLoading(true);
+    setTradeMsg(null);
+    try {
+      const res = await fetch('/api/bot/test-signal', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        setTradeMsg(`🧪 Test signal: ${json.message}`);
+        setTimeout(() => { fetchSignals(); fetchBotStatus(); }, 1000);
+      } else {
+        setTradeMsg(`Test signal failed: ${json.error}`);
+      }
+    } catch (err) {
+      setTradeMsg(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setTradeLoading(false);
+    }
+  }, [fetchSignals, fetchBotStatus]);
 
   // Initial fetch
   useEffect(() => {
@@ -762,6 +798,15 @@ export default function Home() {
                   <ArrowDownCircle className="w-4 h-4" /> SHORT
                 </button>
               </div>
+
+              {/* Test Signal Button */}
+              <button
+                onClick={generateTestSignal}
+                disabled={tradeLoading}
+                className="w-full mt-2 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 font-mono font-bold text-xs hover:bg-purple-500/20 transition-colors disabled:opacity-50"
+              >
+                <Zap className="w-3.5 h-3.5" /> TEST SIGNAL
+              </button>
 
               {tradeLoading && (
                 <div className="mt-2 flex items-center justify-center gap-1.5 text-[10px] text-zinc-500">

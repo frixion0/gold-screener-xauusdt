@@ -16,6 +16,11 @@ export async function GET() {
         currentSMA: null,
         lastPing: null,
         totalSignals,
+        autoTrade: false,
+        quantity: 0.002,
+        leverage: 100,
+        stoplossPercent: 1,
+        takeprofitPercent: 2,
         engine,
       });
     }
@@ -32,14 +37,21 @@ export async function GET() {
       lastPing: botState.lastPing?.toISOString() ?? null,
       lastPingAgoMs: lastPingAgo,
       totalSignals,
+      autoTrade: botState.autoTrade,
+      quantity: botState.quantity,
+      leverage: botState.leverage,
+      stoplossPercent: botState.stoplossPercent,
+      takeprofitPercent: botState.takeprofitPercent,
       engine: {
         startedAt: engine.startedAt,
         lastCheckAt: engine.lastCheckAt,
         nextCheckAt: engine.nextCheckAt,
         lastResult: engine.lastResult,
+        lastTradeResult: engine.lastTradeResult,
         checkCount: engine.checkCount,
         errorCount: engine.errorCount,
         isRunning: engine.isRunning,
+        autoTrade: engine.autoTrade,
       },
     });
   } catch (error) {

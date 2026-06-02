@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff } from 'lucide-react';
+import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff, Wallet, Target, AlertTriangle, DollarSign } from 'lucide-react';
 import { runStrategy } from '@/lib/rsi';
 
 const GoldChart = dynamic(() => import('@/components/GoldChart'), {
@@ -61,6 +61,28 @@ interface SignalRecord {
   createdAt: string;
 }
 
+interface MudrexFunds {
+  balance: string;
+  locked_amount: string;
+  first_time_user: boolean;
+}
+
+interface MudrexPosition {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  entry_price: string;
+  quantity: string;
+  leverage: string;
+  liquidation_price: string;
+  order_type: 'LONG' | 'SHORT';
+  status: string;
+  symbol: string;
+  asset_uuid: string;
+  stoploss: { price: string; order_id: string; order_type: string } | null;
+  takeprofit: { price: string; order_id: string; order_type: string } | null;
+}
+
 interface BotStats {
   totalSignals: number;
   totalBuys: number;
@@ -95,6 +117,11 @@ export default function Home() {
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [signals, setSignals] = useState<SignalRecord[]>([]);
   const [botStats, setBotStats] = useState<BotStats | null>(null);
+
+  // Mudrex broker state
+  const [brokerFunds, setBrokerFunds] = useState<MudrexFunds | null>(null);
+  const [brokerPositions, setBrokerPositions] = useState<MudrexPosition[]>([]);
+  const [brokerError, setBrokerError] = useState<string | null>(null);
 
   const fetchKlines = useCallback(async (isBackground = false) => {
     try {
@@ -144,18 +171,39 @@ export default function Home() {
     } catch { /* silent */ }
   }, []);
 
+  const fetchBroker = useCallback(async () => {
+    try {
+      const [fundsRes, posRes] = await Promise.all([
+        fetch('/api/broker/funds'),
+        fetch('/api/broker/positions'),
+      ]);
+      if (fundsRes.ok) {
+        const fundsJson = await fundsRes.json();
+        if (fundsJson.success) setBrokerFunds(fundsJson.data);
+        else setBrokerError(fundsJson.error || 'Funds fetch failed');
+      } else {
+        setBrokerError(`Funds: ${fundsRes.status}`);
+      }
+      if (posRes.ok) {
+        const posJson = await posRes.json();
+        if (posJson.success) setBrokerPositions(posJson.data || []);
+      }
+    } catch { /* silent */ }
+  }, []);
+
   // Initial fetch
   useEffect(() => {
     fetchKlines();
     fetchBotStatus();
     fetchSignals();
-  }, [fetchKlines, fetchBotStatus, fetchSignals]);
+    fetchBroker();
+  }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker]);
 
   // Auto-refresh every 10 seconds
   useEffect(() => {
-    const interval = setInterval(() => { fetchKlines(true); fetchBotStatus(); fetchSignals(); }, 10000);
+    const interval = setInterval(() => { fetchKlines(true); fetchBotStatus(); fetchSignals(); fetchBroker(); }, 10000);
     return () => clearInterval(interval);
-  }, [fetchKlines, fetchBotStatus, fetchSignals]);
+  }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker]);
 
   const secondsAgo = useSecondsAgo(lastFetch);
   const latestCandle = klineData.length > 0 ? klineData[klineData.length - 1] : null;
@@ -226,7 +274,7 @@ export default function Home() {
               <span className="text-zinc-600">|</span>
               <span>Strategy: <span className="text-purple-400">RSI(1) + SMA(14)</span></span>
             </div>
-            <button onClick={() => { fetchKlines(); fetchBotStatus(); fetchSignals(); }} disabled={isRefreshing}
+            <button onClick={() => { fetchKlines(); fetchBotStatus(); fetchSignals(); fetchBroker(); }} disabled={isRefreshing}
               className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-yellow-400 transition-colors disabled:opacity-50">
               <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
               Refresh
@@ -400,6 +448,117 @@ export default function Home() {
                   </table>
                 )}
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Broker: Balance & Positions */}
+          <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Wallet className="w-4 h-4 text-yellow-400" />
+                <span className="text-sm font-semibold">Mudrex Account</span>
+                {brokerError && (
+                  <span className="text-[10px] text-red-400 ml-auto">{brokerError}</span>
+                )}
+              </div>
+
+              {/* Balance */}
+              {brokerFunds && (
+                <div className="p-3 rounded-lg bg-zinc-900/60 border border-zinc-800/40 mb-3">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">Futures Wallet</div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-[10px] text-zinc-500">Available Balance</div>
+                      <div className="text-lg font-mono font-bold text-emerald-400 tabular-nums">${parseFloat(brokerFunds.balance).toFixed(2)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-zinc-500">Locked Amount</div>
+                      <div className="text-lg font-mono font-bold text-orange-400 tabular-nums">${parseFloat(brokerFunds.locked_amount).toFixed(2)}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-zinc-800/30">
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-zinc-500">Total</span>
+                      <span className="font-mono text-zinc-300 tabular-nums">${(parseFloat(brokerFunds.balance) + parseFloat(brokerFunds.locked_amount)).toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!brokerFunds && !brokerError && (
+                <div className="p-3 rounded-lg bg-zinc-900/60 border border-zinc-800/40 mb-3 text-center text-zinc-600 text-xs">
+                  <RefreshCw className="w-3 h-3 animate-spin inline mr-1" /> Loading balance...
+                </div>
+              )}
+
+              {/* Open Positions */}
+              <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">
+                Open Positions ({brokerPositions.length})
+              </div>
+              {brokerPositions.length === 0 ? (
+                <div className="p-3 rounded-lg bg-zinc-900/40 border border-zinc-800/30 text-center">
+                  <div className="text-zinc-600 text-xs">No open positions</div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {brokerPositions.map((pos) => (
+                    <div key={pos.id} className={`p-3 rounded-lg border ${
+                      pos.order_type === 'LONG'
+                        ? 'bg-emerald-500/5 border-emerald-500/20'
+                        : 'bg-red-500/5 border-red-500/20'
+                    }`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          {pos.order_type === 'LONG'
+                            ? <ArrowUpCircle className="w-4 h-4 text-emerald-400" />
+                            : <ArrowDownCircle className="w-4 h-4 text-red-400" />}
+                          <span className={`font-mono font-bold text-sm ${
+                            pos.order_type === 'LONG' ? 'text-emerald-400' : 'text-red-400'
+                          }`}>{pos.order_type}</span>
+                          <span className="font-mono text-sm text-white font-semibold">{pos.symbol}</span>
+                        </div>
+                        <Badge variant="outline" className={`text-[9px] ${
+                          pos.status === 'OPEN' ? 'border-emerald-500/30 text-emerald-400' : 'border-zinc-700 text-zinc-500'
+                        }`}>
+                          {pos.status}
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Entry</span>
+                          <span className="font-mono text-zinc-300 tabular-nums">${parseFloat(pos.entry_price).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Qty</span>
+                          <span className="font-mono text-zinc-300 tabular-nums">{pos.quantity}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Leverage</span>
+                          <span className="font-mono text-yellow-400 tabular-nums">{pos.leverage}x</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Liq. Price</span>
+                          <span className="font-mono text-red-400 tabular-nums">${parseFloat(pos.liquidation_price).toFixed(2)}</span>
+                        </div>
+                        {pos.stoploss && (
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">SL</span>
+                            <span className="font-mono text-red-400 tabular-nums">${parseFloat(pos.stoploss.price).toFixed(2)}</span>
+                          </div>
+                        )}
+                        {pos.takeprofit && (
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">TP</span>
+                            <span className="font-mono text-emerald-400 tabular-nums">${parseFloat(pos.takeprofit.price).toFixed(2)}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-zinc-800/20 text-[10px] text-zinc-600 font-mono">
+                        Opened: {new Date(pos.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 

@@ -15,7 +15,6 @@ import {
   ColorType,
   CrosshairMode,
   LineStyle,
-  type SeriesMarker,
 } from 'lightweight-charts';
 import { runStrategy, type Signal, type RSIPoint } from '@/lib/rsi';
 
@@ -219,16 +218,16 @@ export default function GoldChart({ data, lastFetchTime }: GoldChartProps) {
       oversoldLine.setData([{ time: firstTime, value: 30 }, { time: lastTime, value: 30 }]);
     }
 
-    // Add buy/sell markers on candlestick chart
-    const markers: SeriesMarker<CandlestickData>[] = signals.map((sig) => ({
-      time: sig.candleTime as Time,
-      position: sig.type === 'BUY' ? 'belowBar' : 'aboveBar',
-      color: sig.type === 'BUY' ? '#26a69a' : '#ef5350',
-      shape: sig.type === 'BUY' ? 'arrowUp' : 'arrowDown',
-      text: `${sig.type} @ ${formatPrice(sig.price)}`,
-    }));
-    if (markers.length > 0) {
-      candleSeries.setMarkers(markers);
+    // Add buy/sell markers on candlestick chart (v5 uses applyOptions instead of setMarkers)
+    if (signals.length > 0) {
+      const markers = signals.map((sig) => ({
+        time: sig.candleTime as Time,
+        position: sig.type === 'BUY' ? 'belowBar' as const : 'aboveBar' as const,
+        color: sig.type === 'BUY' ? '#26a69a' : '#ef5350',
+        shape: sig.type === 'BUY' ? 'arrowUp' as const : 'arrowDown' as const,
+        text: `${sig.type} @ ${formatPrice(sig.price)}`,
+      }));
+      candleSeries.applyOptions({ markers });
     }
 
     chart.timeScale().fitContent();

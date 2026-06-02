@@ -2,62 +2,28 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { runStrategy, getCurrentState } from '@/lib/rsi';
 
-const BINANCE_FUTURES_URL = 'https://fapi.binance.com/fapi/v1/klines';
-const PROXY_URL = 'https://api.allorigins.win/raw?url=';
-
-async function fetchKlines() {
-  const url = `${BINANCE_FUTURES_URL}?symbol=XAUUSDT&interval=3m&limit=200`;
-
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (response.ok) {
-      const data = await response.json();
-      return data.map((k: (string | number)[]) => ({
-        time: Math.floor(Number(k[0]) / 1000),
-        open: parseFloat(String(k[1])),
-        high: parseFloat(String(k[2])),
-        low: parseFloat(String(k[3])),
-        close: parseFloat(String(k[4])),
-        volume: parseFloat(String(k[5])),
-      }));
-    }
-  } catch {
-    // fallback to proxy
-  }
-
-  try {
-    const proxyUrl = `${PROXY_URL}${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) });
-    if (response.ok) {
-      const data = await response.json();
-      return data.map((k: (string | number)[]) => ({
-        time: Math.floor(Number(k[0]) / 1000),
-        open: parseFloat(String(k[1])),
-        high: parseFloat(String(k[2])),
-        low: parseFloat(String(k[3])),
-        close: parseFloat(String(k[4])),
-        volume: parseFloat(String(k[5])),
-      }));
-    }
-  } catch {
-    // Proxy also failed
-  }
-
-  throw new Error('Failed to fetch kline data');
-}
-
 // POST /api/bot/test-signal
-// Generates a test signal using the current strategy and saves it to DB
-export async function POST() {
+// Accepts client-side kline data (avoids Binance IP blocking on cloud)
+// Body: { candles: [{ time, open, high, low, close, volume }] }
+export async function POST(request: Request) {
   try {
-    const candles = await fetchKlines();
+    const body = await request.json();
+    const candles = body.candles;
+
+    if (!candles || !Array.isArray(candles) || candles.length < 50) {
+      return NextResponse.json({
+        success: false,
+        error: 'Need at least 50 candles. Send kline data in body.candles',
+      }, { status: 400 });
+    }
+
+    // Run the strategy on client-provided data
     const { signals, rsiPoints } = runStrategy(candles, 1, 14);
     const state = getCurrentState(candles, 1, 14);
     const latestPrice = candles[candles.length - 1]?.close ?? 0;
     const latestRSI = rsiPoints.length > 0 ? rsiPoints[rsiPoints.length - 1] : null;
 
-    // Generate a test signal based on current state
-    // If the strategy generates a signal, use it; otherwise create a synthetic one
+    // Generate test signal
     const testSignal = signals.length > 0
       ? signals[signals.length - 1]
       : {
@@ -68,10 +34,10 @@ export async function POST() {
           candleTime: Math.floor(Date.now() / 1000),
         };
 
-    // Mark it as a test signal by adding a note
+    // Save test signal to DB
     const saved = await db.signal.create({
       data: {
-        type: `[TEST] ${testSignal.type}` as any,
+        type: `[TEST] ${testSignal.type}`,
         price: testSignal.price,
         rsi: testSignal.rsi,
         rsiSma: testSignal.rsiSma,
@@ -98,7 +64,7 @@ export async function POST() {
 
     return NextResponse.json({
       success: true,
-      message: `Test signal generated: [TEST] ${testSignal.type} @ $${testSignal.price.toFixed(2)} (RSI=${state.currentRSI?.toFixed(1)}, SMA=${state.currentSMA?.toFixed(1)}, Position=${state.position})`,
+      message: `[TEST] ${testSignal.type} @ $${testSignal.price.toFixed(2)} | RSI=${state.currentRSI?.toFixed(1)} SMA=${state.currentSMA?.toFixed(1)} | Pos=${state.position}`,
       signal: saved,
       state: {
         position: state.position,

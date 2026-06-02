@@ -237,8 +237,8 @@ async function runBotCheck(): Promise<void> {
       const config = {
         quantity: botConfig?.quantity ?? 0.002,
         leverage: botConfig?.leverage ?? 100,
-        slPercent: botConfig?.stoplossPercent ?? 1,
-        tpPercent: botConfig?.takeprofitPercent ?? 2,
+        slPercent: botConfig?.stoplossPercent ?? 0.05,
+        tpPercent: botConfig?.takeprofitPercent ?? 0.15,
       };
 
       for (const signal of newSignals) {

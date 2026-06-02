@@ -138,8 +138,9 @@ export default function Home() {
   const [tradeLeverage, setTradeLeverage] = useState('100');
   const [tradeSL, setTradeSL] = useState('');
   const [tradeTP, setTradeTP] = useState('');
-  const [autoSLPct, setAutoSLPct] = useState('1');
-  const [autoTPPct, setAutoTPPct] = useState('2');
+  const [autoSLPct, setAutoSLPct] = useState('0.05');
+  const [autoTPPct, setAutoTPPct] = useState('0.15');
+  const [testSignalLoading, setTestSignalLoading] = useState(false);
 
   const fetchKlines = useCallback(async (isBackground = false) => {
     try {
@@ -302,23 +303,33 @@ export default function Home() {
   }, [tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
 
   const generateTestSignal = useCallback(async () => {
-    setTradeLoading(true);
+    if (klineData.length < 50) {
+      setTradeMsg('Not enough candle data yet');
+      return;
+    }
+    setTestSignalLoading(true);
     setTradeMsg(null);
     try {
-      const res = await fetch('/api/bot/test-signal', { method: 'POST' });
+      // Send client-side kline data to avoid Binance IP blocking on server
+      const candles = klineData.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+      const res = await fetch('/api/bot/test-signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candles }),
+      });
       const json = await res.json();
       if (json.success) {
-        setTradeMsg(`🧪 Test signal: ${json.message}`);
+        setTradeMsg(`Test signal: ${json.message}`);
         setTimeout(() => { fetchSignals(); fetchBotStatus(); }, 1000);
       } else {
-        setTradeMsg(`Test signal failed: ${json.error}`);
+        setTradeMsg(`Test failed: ${json.error}`);
       }
     } catch (err) {
       setTradeMsg(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
     } finally {
-      setTradeLoading(false);
+      setTestSignalLoading(false);
     }
-  }, [fetchSignals, fetchBotStatus]);
+  }, [klineData, fetchSignals, fetchBotStatus]);
 
   // Initial fetch
   useEffect(() => {
@@ -717,18 +728,24 @@ export default function Home() {
               </div>
 
               {/* Auto-Trade Toggle */}
-              <div className={`flex items-center justify-between p-2.5 rounded-lg border mb-3 ${autoTrade ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-zinc-900/60 border-zinc-800/40'}`}>
+              <div className={`flex items-center justify-between p-2.5 rounded-lg border mb-3 transition-all duration-300 ${autoTrade ? 'bg-emerald-500/15 border-emerald-500/40 shadow-lg shadow-emerald-500/10' : 'bg-zinc-900/60 border-zinc-800/40'}`}>
                 <div className="flex items-center gap-2">
-                  {autoTrade ? <Power className="w-3.5 h-3.5 text-emerald-400" /> : <PowerOff className="w-3.5 h-3.5 text-zinc-500" />}
+                  {autoTrade
+                    ? <div className="relative"><Power className="w-3.5 h-3.5 text-emerald-400" /><div className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full animate-ping" /><div className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-400 rounded-full" /></div>
+                    : <PowerOff className="w-3.5 h-3.5 text-zinc-500" />}
                   <div>
-                    <div className="text-xs font-semibold">Auto-Trade</div>
-                    <div className="text-[9px] text-zinc-500">Bot places orders on signals</div>
+                    <div className={`text-xs font-semibold ${autoTrade ? 'text-emerald-400' : 'text-zinc-400'}`}>
+                      Auto-Trade {autoTrade ? 'ACTIVE' : 'OFF'}
+                    </div>
+                    <div className={`text-[9px] ${autoTrade ? 'text-emerald-400/60' : 'text-zinc-600'}`}>
+                      {autoTrade ? 'Bot placing orders on signals (SL 0.05% / TP 0.15%)' : 'Tap toggle to enable'}
+                    </div>
                   </div>
                 </div>
                 <button
                   onClick={() => toggleAutoTrade(!autoTrade)}
                   disabled={tradeLoading}
-                  className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${autoTrade ? 'bg-emerald-500' : 'bg-zinc-700'} ${tradeLoading ? 'opacity-50' : ''}`}
+                  className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${autoTrade ? 'bg-emerald-500 shadow-lg shadow-emerald-500/30' : 'bg-zinc-700'} ${tradeLoading ? 'opacity-50' : ''}`}
                 >
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${autoTrade ? 'translate-x-5' : 'translate-x-0.5'}`} />
                 </button>
@@ -802,10 +819,11 @@ export default function Home() {
               {/* Test Signal Button */}
               <button
                 onClick={generateTestSignal}
-                disabled={tradeLoading}
+                disabled={testSignalLoading}
                 className="w-full mt-2 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 font-mono font-bold text-xs hover:bg-purple-500/20 transition-colors disabled:opacity-50"
               >
-                <Zap className="w-3.5 h-3.5" /> TEST SIGNAL
+                {testSignalLoading ? <div className="w-3 h-3 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                {testSignalLoading ? 'Generating...' : 'TEST SIGNAL'}
               </button>
 
               {tradeLoading && (

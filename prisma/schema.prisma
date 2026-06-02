@@ -45,6 +45,6 @@ model BotState {
   autoTrade         Boolean  @default(false)
   quantity          Float    @default(0.002)
   leverage          Int      @default(100)
-  stoplossPercent   Float    @default(1)
-  takeprofitPercent Float    @default(2)
+  stoplossPercent   Float    @default(0.05)
+  takeprofitPercent Float    @default(0.15)
 }

@@ -267,6 +267,9 @@ export default function Home() {
                   <div className="text-[9px] text-zinc-500 font-mono">
                     RSI {sig.rsi.toFixed(1)} / SMA {sig.rsiSma.toFixed(1)}
                   </div>
+                  <div className="text-[9px] text-zinc-600 font-mono">
+                    {new Date(sig.candleTime * 1000).toLocaleString()}
+                  </div>
                 </div>
               </div>
             ))}

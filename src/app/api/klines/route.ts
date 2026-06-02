@@ -7,13 +7,15 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get('limit') || '200', 10);
 
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
+    // XAUUSDT is available on Binance Futures, not Spot
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
     const response = await fetch(url, {
       next: { revalidate: 0 },
     });
 
     if (!response.ok) {
-      throw new Error(`Binance API error: ${response.status}`);
+      const errorData = await response.text();
+      throw new Error(`Binance Futures API error: ${response.status} - ${errorData}`);
     }
 
     const data = await response.json();

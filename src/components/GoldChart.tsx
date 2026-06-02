@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useCallback, useReducer } from 'react';
 import {
   createChart,
   type IChartApi,
@@ -30,6 +30,49 @@ interface GoldChartProps {
   data: KlineData[];
 }
 
+interface ChartState {
+  currentPrice: number | null;
+  priceChange: { value: number; percent: number } | null;
+  high24h: number;
+  low24h: number;
+  volume24h: number;
+  prevCandle: KlineData | null;
+}
+
+function computeInitialState(data: KlineData[]): ChartState {
+  if (data.length === 0) {
+    return {
+      currentPrice: null,
+      priceChange: null,
+      high24h: 0,
+      low24h: 0,
+      volume24h: 0,
+      prevCandle: null,
+    };
+  }
+  const latest = data[data.length - 1];
+  const first = data[0];
+  let maxHigh = 0;
+  let minLow = Infinity;
+  let totalVol = 0;
+  for (const d of data) {
+    if (d.high > maxHigh) maxHigh = d.high;
+    if (d.low < minLow) minLow = d.low;
+    totalVol += d.volume;
+  }
+  return {
+    currentPrice: latest.close,
+    priceChange: {
+      value: latest.close - first.open,
+      percent: ((latest.close - first.open) / first.open) * 100,
+    },
+    high24h: maxHigh,
+    low24h: minLow,
+    volume24h: totalVol,
+    prevCandle: data.length >= 2 ? data[data.length - 2] : null,
+  };
+}
+
 function formatPrice(price: number): string {
   return price.toFixed(2);
 }
@@ -46,70 +89,27 @@ export default function GoldChart({ data }: GoldChartProps) {
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
-  const [priceChange, setPriceChange] = useState<{ value: number; percent: number } | null>(null);
-  const [high24h, setHigh24h] = useState<number>(0);
-  const [low24h, setLow24h] = useState<number>(0);
-  const [volume24h, setVolume24h] = useState<number>(0);
-  const [isConnected, setIsConnected] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [prevCandle, setPrevCandle] = useState<KlineData | null>(null);
 
-  const currentCandleRef = useRef<KlineData | null>(null);
+  const [isConnected, setIsConnected] = useReducer((_: boolean, v: boolean | ((p: boolean) => boolean)) => typeof v === 'function' ? v(false) : v, false);
+  const [lastUpdate, setLastUpdate] = useReducer((_: Date | null, v: Date | null) => v, null);
+  const [state, dispatch] = useReducer((prev: ChartState, action: ChartState) => action, data, computeInitialState);
+
   const currentPriceRef = useRef<number>(0);
+  const stateRef = useRef<ChartState>(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
-  const derivedStats = useMemo(() => {
-    if (data.length === 0) return null;
-    const latest = data[data.length - 1];
-    const first = data[0];
-    let maxHigh = 0;
-    let minLow = Infinity;
-    let totalVol = 0;
-    for (const d of data) {
-      if (d.high > maxHigh) maxHigh = d.high;
-      if (d.low < minLow) minLow = d.low;
-      totalVol += d.volume;
-    }
-    return {
-      initialPrice: latest.close,
-      priceChange: {
-        value: latest.close - first.open,
-        percent: ((latest.close - first.open) / first.open) * 100,
-      },
-      high24h: maxHigh,
-      low24h: minLow,
-      volume24h: totalVol,
-      prevCandle: data.length >= 2 ? data[data.length - 2] : null,
-      latestCandle: latest,
-    };
-  }, [data]);
-
-  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
-  const [priceChange, setPriceChange] = useState<{ value: number; percent: number } | null>(null);
-  const [high24h, setHigh24h] = useState<number>(0);
-  const [low24h, setLow24h] = useState<number>(0);
-  const [volume24h, setVolume24h] = useState<number>(0);
-  const [prevCandle, setPrevCandle] = useState<KlineData | null>(null);
-
-  // Sync derived stats to state on initial load
+  // Keep state in sync when data prop changes
   useEffect(() => {
-    if (derivedStats) {
-      currentPriceRef.current = derivedStats.initialPrice;
-      setCurrentPrice(derivedStats.initialPrice);
-      setPriceChange(derivedStats.priceChange);
-      setHigh24h(derivedStats.high24h);
-      setLow24h(derivedStats.low24h);
-      setVolume24h(derivedStats.volume24h);
-      setPrevCandle(derivedStats.prevCandle);
-      currentCandleRef.current = { ...derivedStats.latestCandle };
+    dispatch(computeInitialState(data));
+    if (data.length > 0) {
+      currentPriceRef.current = data[data.length - 1].close;
     }
-  }, [derivedStats]);
+  }, [data]);
 
   const initChart = useCallback(() => {
     if (!chartContainerRef.current) return;
 
     const container = chartContainerRef.current;
-    const rect = container.getBoundingClientRect();
 
     const chart = createChart(container, {
       layout: {
@@ -217,14 +217,16 @@ export default function GoldChart({ data }: GoldChartProps) {
     };
   }, [initChart]);
 
+  // WebSocket for real-time updates
   useEffect(() => {
     const connectWebSocket = () => {
       if (wsRef.current) {
         wsRef.current.close();
       }
 
+      // Binance Futures WebSocket for XAUUSDT
       const ws = new WebSocket(
-        'wss://stream.binance.com:9443/ws/xauusdt@kline_3m'
+        'wss://fstream.binance.com/ws/xauusdt@kline_3m'
       );
 
       ws.onopen = () => {
@@ -263,26 +265,29 @@ export default function GoldChart({ data }: GoldChartProps) {
             });
           }
 
-          setCurrentPrice(close);
           currentPriceRef.current = close;
           setLastUpdate(new Date());
 
-          if (currentCandleRef.current) {
-            const prevClose = currentCandleRef.current.close;
-            setPriceChange((prev) => {
-              if (prev && prevCandleRef.current) {
-                const baseOpen = prevCandleRef.current.open;
-                return {
-                  value: close - baseOpen,
-                  percent: ((close - baseOpen) / baseOpen) * 100,
-                };
-              }
-              return prev;
-            });
-          }
+          const currentState = stateRef.current;
+          const baseOpen = currentState.prevCandle
+            ? currentState.prevCandle.open
+            : open;
+          const curHigh = Math.max(currentState.high24h, high);
+          const curLow = currentState.low24h === 0
+            ? low
+            : Math.min(currentState.low24h, low);
 
-          if (parseFloat(k.h) > high24h) setHigh24h(parseFloat(k.h));
-          if (parseFloat(k.l) < low24h || low24h === 0) setLow24h(parseFloat(k.l));
+          dispatch({
+            currentPrice: close,
+            priceChange: {
+              value: close - baseOpen,
+              percent: ((close - baseOpen) / baseOpen) * 100,
+            },
+            high24h: curHigh,
+            low24h: curLow,
+            volume24h: currentState.volume24h,
+            prevCandle: currentState.prevCandle,
+          });
         } catch (err) {
           // ignore parse errors
         }
@@ -290,7 +295,6 @@ export default function GoldChart({ data }: GoldChartProps) {
 
       ws.onclose = () => {
         setIsConnected(false);
-        // Reconnect after 3 seconds
         setTimeout(connectWebSocket, 3000);
       };
 
@@ -309,6 +313,8 @@ export default function GoldChart({ data }: GoldChartProps) {
       }
     };
   }, []);
+
+  const { currentPrice, priceChange, high24h, low24h, volume24h, prevCandle } = state;
 
   const prevClose = prevCandle?.close;
   const priceColorClass = prevClose
@@ -377,8 +383,8 @@ export default function GoldChart({ data }: GoldChartProps) {
 
       {/* Metrics Bar */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-zinc-800/40 border-b border-zinc-800/60">
-        <MetricItem label="24h High" value={high24h ? formatPrice(high24h) : '---'} />
-        <MetricItem label="24h Low" value={low24h ? formatPrice(low24h) : '---'} />
+        <MetricItem label="Session High" value={high24h ? formatPrice(high24h) : '---'} />
+        <MetricItem label="Session Low" value={low24h ? formatPrice(low24h) : '---'} />
         <MetricItem label="Volume" value={volume24h ? formatVolume(volume24h) : '---'} />
         <MetricItem
           label="Last Update"
@@ -389,7 +395,7 @@ export default function GoldChart({ data }: GoldChartProps) {
       {/* Chart Container */}
       <div className="flex-1 relative bg-[#0a0e17] min-h-[300px]">
         <div ref={chartContainerRef} className="absolute inset-0 w-full h-full" />
-        {(!currentPrice || !isConnected) && (
+        {!currentPrice && (
           <div className="absolute inset-0 flex items-center justify-center bg-[#0a0e17]/80 z-10">
             <div className="flex flex-col items-center gap-3">
               <div className="w-10 h-10 border-2 border-yellow-500/30 border-t-yellow-500 rounded-full animate-spin" />

@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Activity, TrendingUp, BarChart3, Clock, Zap } from 'lucide-react';
+import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw } from 'lucide-react';
 
 const GoldChart = dynamic(() => import('@/components/GoldChart'), {
   ssr: false,
@@ -31,52 +31,72 @@ interface KlineData {
   takerBuyQuote: number;
 }
 
+function useSecondsAgo(since: Date | null): number {
+  const [seconds, setSeconds] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const tick = () => {
+      setSeconds(since ? Math.floor((Date.now() - since.getTime()) / 1000) : 0);
+    };
+    tick();
+    intervalRef.current = setInterval(tick, 1000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [since]);
+
+  return seconds;
+}
+
 export default function Home() {
   const [klineData, setKlineData] = useState<KlineData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const fetchCountRef = useRef(0);
 
-  useEffect(() => {
-    const fetchKlines = async () => {
-      try {
-        const res = await fetch('/api/klines?symbol=XAUUSDT&interval=3m&limit=200');
-        if (!res.ok) throw new Error('Failed to fetch data');
-        const data = await res.json();
-        setKlineData(data);
-        setError(null);
-      } catch (err) {
+  const fetchKlines = useCallback(async (isBackground = false) => {
+    try {
+      if (!isBackground) setIsRefreshing(true);
+      const res = await fetch('/api/klines?symbol=XAUUSDT&interval=3m&limit=200');
+      if (!res.ok) throw new Error('Failed to fetch data');
+      const data: KlineData[] = await res.json();
+      setKlineData(data);
+      setLastFetch(new Date());
+      setError(null);
+      fetchCountRef.current += 1;
+    } catch (_err) {
+      if (!isBackground) {
         setError('Failed to load market data. Retrying...');
-        // Retry after 5 seconds
-        setTimeout(fetchKlines, 5000);
-      } finally {
-        setLoading(false);
       }
-    };
-
-    fetchKlines();
+    } finally {
+      setIsRefreshing(false);
+      if (!isBackground) setLoading(false);
+    }
   }, []);
 
-  // Auto-refresh historical data every 3 minutes
+  // Initial fetch
   useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch('/api/klines?symbol=XAUUSDT&interval=3m&limit=200');
-        if (res.ok) {
-          const data = await res.json();
-          setKlineData(data);
-          setError(null);
-        }
-      } catch {
-        // silently fail, WebSocket keeps real-time updates
-      }
-    }, 180000);
+    fetchKlines();
+  }, [fetchKlines]);
 
+  // Auto-refresh every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchKlines(true);
+    }, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchKlines]);
+
+  const secondsAgo = useSecondsAgo(lastFetch);
 
   const latestCandle = klineData.length > 0 ? klineData[klineData.length - 1] : null;
   const prevCandle = klineData.length > 1 ? klineData[klineData.length - 2] : null;
   const isUp = prevCandle ? latestCandle!.close >= prevCandle.close : true;
+
+  const nextRefreshIn = 10 - (secondsAgo % 10);
 
   return (
     <div className="min-h-screen bg-[#080b12] text-white">
@@ -99,17 +119,49 @@ export default function Home() {
             </Badge>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-2 text-xs text-zinc-500">
-              <Clock className="w-3 h-3" />
-              <span>Binance Feed</span>
-            </div>
+          {/* Live Update Status */}
+          <div className="flex items-center gap-3">
+            {lastFetch && (
+              <div className="flex items-center gap-2">
+                <div className={`w-1.5 h-1.5 rounded-full ${secondsAgo < 3 ? 'bg-emerald-400' : secondsAgo < 8 ? 'bg-yellow-400' : 'bg-orange-400'} ${secondsAgo < 3 ? 'animate-pulse' : ''}`} />
+                <span className={`text-xs font-mono tabular-nums ${secondsAgo < 3 ? 'text-emerald-400' : secondsAgo < 8 ? 'text-yellow-400' : 'text-orange-400'}`}>
+                  {secondsAgo < 2 ? 'Just now' : `${secondsAgo}s ago`}
+                </span>
+                <span className="text-zinc-600 text-xs font-mono tabular-nums">
+                  next in {nextRefreshIn}s
+                </span>
+              </div>
+            )}
             <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[10px]">
               XAUUSDT
             </Badge>
           </div>
         </div>
       </header>
+
+      {/* Last Updated Banner */}
+      {lastFetch && (
+        <div className="bg-[#0b1019] border-b border-zinc-800/40">
+          <div className="max-w-[1600px] mx-auto px-4 py-1.5 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+              <Clock className="w-3 h-3" />
+              <span>Last candle updated: <span className="text-zinc-300 font-mono tabular-nums">{lastFetch.toLocaleTimeString()}</span></span>
+              <span className="text-zinc-600">|</span>
+              <span>Interval: <span className="text-yellow-400">10s</span></span>
+              <span className="text-zinc-600">|</span>
+              <span>Source: <span className="text-zinc-300">Binance Futures</span></span>
+            </div>
+            <button
+              onClick={() => fetchKlines()}
+              disabled={isRefreshing}
+              className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-yellow-400 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-[1600px] mx-auto p-3 sm:p-4">
         {/* Stats Cards */}
@@ -166,7 +218,7 @@ export default function Home() {
                   </div>
                 </div>
               ) : (
-                <GoldChart data={klineData} />
+                <GoldChart data={klineData} lastFetchTime={lastFetch} />
               )}
             </div>
           </CardContent>
@@ -174,8 +226,8 @@ export default function Home() {
 
         {/* Bottom Info */}
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-600 px-1">
-          <span>Data sourced from Binance via WebSocket (wss://stream.binance.com)</span>
-          <span>3-minute interval | Auto-updating in real-time</span>
+          <span>Data sourced from Binance Futures (fapi.binance.com)</span>
+          <span>3-minute interval | Auto-refreshing every 10s</span>
         </div>
       </main>
     </div>

@@ -30,6 +30,7 @@ interface KlineData {
 
 interface GoldChartProps {
   data: KlineData[];
+  lastFetchTime: Date | null;
 }
 
 interface ChartState {
@@ -85,18 +86,16 @@ function formatVolume(volume: number): string {
   return volume.toFixed(2);
 }
 
-export default function GoldChart({ data }: GoldChartProps) {
+export default function GoldChart({ data, lastFetchTime }: GoldChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
 
   const [isConnected, setIsConnected] = useReducer(
     (_: boolean, v: boolean | ((p: boolean) => boolean)) => (typeof v === 'function' ? v(false) : v),
     false
   );
-  const [lastUpdate, setLastUpdate] = useReducer((_: Date | null, v: Date | null) => v, null);
   const [state, dispatch] = useReducer(
     (prev: ChartState, action: ChartState) => action,
     data,
@@ -164,7 +163,6 @@ export default function GoldChart({ data }: GoldChartProps) {
 
     chartRef.current = chart;
 
-    // lightweight-charts v5 API: chart.addSeries(SeriesType, options)
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#26a69a',
       downColor: '#ef5350',
@@ -229,14 +227,41 @@ export default function GoldChart({ data }: GoldChartProps) {
     };
   }, [initChart]);
 
-  // WebSocket for real-time updates (Binance Futures)
+  // Update chart series when data prop changes (for polling updates)
   useEffect(() => {
+    if (data.length === 0) return;
+    if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
+
+    const lastCandle = data[data.length - 1];
+    const prevCandleData = data[data.length - 2];
+
+    // Update last candle with latest data
+    candleSeriesRef.current.update({
+      time: lastCandle.time as Time,
+      open: lastCandle.open,
+      high: lastCandle.high,
+      low: lastCandle.low,
+      close: lastCandle.close,
+    });
+
+    volumeSeriesRef.current.update({
+      time: lastCandle.time as Time,
+      value: lastCandle.volume,
+      color: lastCandle.close >= lastCandle.open ? 'rgba(38, 166, 154, 0.3)' : 'rgba(239, 83, 80, 0.3)',
+    });
+  }, [data]);
+
+  // WebSocket for real-time updates (fallback/complement to polling)
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+
     const connectWebSocket = () => {
-      if (wsRef.current) {
-        wsRef.current.close();
+      if (ws) {
+        ws.close();
       }
 
-      const ws = new WebSocket('wss://fstream.binance.com/ws/xauusdt@kline_3m');
+      ws = new WebSocket('wss://fstream.binance.com/ws/xauusdt@kline_3m');
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -273,7 +298,6 @@ export default function GoldChart({ data }: GoldChartProps) {
           }
 
           currentPriceRef.current = close;
-          setLastUpdate(new Date());
 
           const currentState = stateRef.current;
           const baseOpen = currentState.prevCandle
@@ -301,22 +325,19 @@ export default function GoldChart({ data }: GoldChartProps) {
 
       ws.onclose = () => {
         setIsConnected(false);
-        setTimeout(connectWebSocket, 3000);
+        reconnectTimeout = setTimeout(connectWebSocket, 3000);
       };
 
       ws.onerror = () => {
-        ws.close();
+        ws?.close();
       };
-
-      wsRef.current = ws;
     };
 
     connectWebSocket();
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
   }, []);
 
@@ -337,6 +358,9 @@ export default function GoldChart({ data }: GoldChartProps) {
       : priceChange && priceChange.value < 0
         ? 'text-red-400'
         : 'text-zinc-400';
+
+  // Compute last candle's timestamp
+  const lastCandleTime = data.length > 0 ? new Date(data[data.length - 1].time * 1000) : null;
 
   return (
     <div className="flex flex-col h-full w-full">
@@ -365,13 +389,35 @@ export default function GoldChart({ data }: GoldChartProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 ml-auto">
-          <div
-            className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`}
-          />
-          <span className={`text-xs ${isConnected ? 'text-emerald-400' : 'text-red-400'}`}>
-            {isConnected ? 'LIVE' : 'OFFLINE'}
-          </span>
+        {/* Connection + Update Status */}
+        <div className="flex items-center gap-3 ml-auto">
+          <div className="flex items-center gap-1.5">
+            <div
+              className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`}
+            />
+            <span className={`text-xs ${isConnected ? 'text-emerald-400' : 'text-zinc-600'}`}>
+              {isConnected ? 'WS LIVE' : 'POLLING'}
+            </span>
+          </div>
+
+          {lastFetchTime && (
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-800/60">
+              <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                !isConnected ? 'bg-yellow-400' : 'bg-emerald-400'
+              }`} />
+              <span className="text-[11px] font-mono tabular-nums text-zinc-400">
+                Updated {lastFetchTime.toLocaleTimeString()}
+              </span>
+            </div>
+          )}
+
+          {lastCandleTime && (
+            <div className="hidden sm:flex items-center gap-1 text-[11px] text-zinc-600">
+              <span className="font-mono tabular-nums">
+                Candle: {lastCandleTime.toLocaleTimeString()}
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-6">
@@ -403,12 +449,26 @@ export default function GoldChart({ data }: GoldChartProps) {
         <MetricItem label="Session High" value={high24h ? formatPrice(high24h) : '---'} />
         <MetricItem label="Session Low" value={low24h ? formatPrice(low24h) : '---'} />
         <MetricItem label="Volume" value={volume24h ? formatVolume(volume24h) : '---'} />
-        <MetricItem label="Last Update" value={lastUpdate ? lastUpdate.toLocaleTimeString() : '---'} />
+        <MetricItem
+          label="Data Source"
+          value={isConnected ? 'WebSocket + Poll' : '10s Polling'}
+        />
       </div>
 
       {/* Chart Container */}
       <div className="flex-1 relative bg-[#0a0e17] min-h-[300px]">
         <div ref={chartContainerRef} className="absolute inset-0 w-full h-full" />
+
+        {/* Floating update indicator */}
+        {lastFetchTime && !isConnected && (
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-yellow-500/10 border border-yellow-500/20">
+            <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
+            <span className="text-[11px] text-yellow-400 font-mono tabular-nums">
+              Auto-updates every 10s
+            </span>
+          </div>
+        )}
+
         {!currentPrice && (
           <div className="absolute inset-0 flex items-center justify-center bg-[#0a0e17]/80 z-10">
             <div className="flex flex-col items-center gap-3">

@@ -10,7 +10,7 @@ import { runStrategy } from '@/lib/rsi';
 const GoldChart = dynamic(() => import('@/components/GoldChart'), {
   ssr: false,
   loading: () => (
-    <div className="flex items-center justify-center h-[500px] bg-[#0a0e17]">
+    <div className="flex items-center justify-center bg-[#0a0e17]" style={{ height: 'clamp(280px, 45vh, 560px)' }}>
       <div className="flex flex-col items-center gap-3">
         <div className="w-10 h-10 border-2 border-yellow-500/30 border-t-yellow-500 rounded-full animate-spin" />
         <span className="text-zinc-400 text-sm">Loading chart engine...</span>
@@ -91,7 +91,6 @@ export default function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const fetchCountRef = useRef(0);
 
-  // Bot state
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [signals, setSignals] = useState<SignalRecord[]>([]);
   const [botStats, setBotStats] = useState<BotStats | null>(null);
@@ -144,14 +143,12 @@ export default function Home() {
     } catch { /* silent */ }
   }, []);
 
-  // Initial fetch
   useEffect(() => {
     fetchKlines();
     fetchBotStatus();
     fetchSignals();
   }, [fetchKlines, fetchBotStatus, fetchSignals]);
 
-  // Auto-refresh every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => { fetchKlines(true); fetchBotStatus(); fetchSignals(); }, 10000);
     return () => clearInterval(interval);
@@ -163,137 +160,112 @@ export default function Home() {
   const isUp = prevCandle ? latestCandle!.close >= prevCandle.close : true;
   const nextRefreshIn = 10 - (secondsAgo % 10);
 
-  // Client-side RSI calculation from fetched kline data
+  // Client-side RSI
   const { rsiPoints, signals: clientSignals } = runStrategy(klineData, 1, 14);
   const latestRSI = rsiPoints.length > 0 ? rsiPoints[rsiPoints.length - 1] : null;
-  const recentClientSignals = clientSignals.slice(-2).reverse(); // Last 2 signals
-  const recentDBSignals = signals.slice(0, 2); // Latest 2 from DB
+  const recentClientSignals = clientSignals.slice(-2).reverse();
+
+  const priceColor = isUp ? 'text-emerald-400' : 'text-red-400';
+  const changeValue = latestCandle && prevCandle ? latestCandle.close - prevCandle.close : 0;
+  const changePercent = prevCandle ? ((changeValue / prevCandle.close) * 100) : 0;
+  const changeColor = changeValue >= 0 ? 'text-emerald-400' : 'text-red-400';
 
   return (
     <div className="min-h-screen bg-[#080b12] text-white">
-      {/* Top Navigation */}
+      {/* === HEADER === */}
       <header className="border-b border-zinc-800/60 bg-[#0d1117]">
-        <div className="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-yellow-400 to-amber-600 flex items-center justify-center shadow-lg shadow-yellow-500/20">
-                <Zap className="w-4 h-4 text-white" />
+        <div className="max-w-[1600px] mx-auto px-3 sm:px-4 py-2 sm:py-3">
+          {/* Row 1: Logo + Price + Status */}
+          <div className="flex items-center justify-between gap-2">
+            {/* Left: Logo + Pair */}
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-br from-yellow-400 to-amber-600 flex items-center justify-center shadow-lg shadow-yellow-500/20 shrink-0">
+                <Zap className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-white" />
               </div>
-              <h1 className="text-lg font-bold tracking-tight">
-                <span className="text-yellow-400">Gold</span>
-                <span className="text-zinc-300">Screener</span>
-              </h1>
+              <div className="min-w-0">
+                <h1 className="text-sm sm:text-lg font-bold tracking-tight leading-tight">
+                  <span className="text-yellow-400">Gold</span><span className="text-zinc-300">Screener</span>
+                </h1>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-zinc-500 text-[10px] sm:text-xs font-medium">XAUUSDT</span>
+                  <span className="text-zinc-700 text-[10px]">3m</span>
+                  <Badge variant="outline" className="border-purple-500/30 text-purple-400 text-[8px] sm:text-[10px] uppercase px-1.5 py-0">
+                    RSI Bot
+                  </Badge>
+                </div>
+              </div>
             </div>
-            <Badge variant="outline" className="border-yellow-500/30 text-yellow-400 text-[10px] uppercase tracking-wider">
-              <Activity className="w-3 h-3 mr-1" />
-              Real-Time
-            </Badge>
-            <Badge variant="outline" className="border-purple-500/30 text-purple-400 text-[10px] uppercase tracking-wider">
-              <Bot className="w-3 h-3 mr-1" />
-              RSI Bot
-            </Badge>
-          </div>
 
-          <div className="flex items-center gap-3">
-            {lastFetch && (
-              <div className="flex items-center gap-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${secondsAgo < 3 ? 'bg-emerald-400' : secondsAgo < 8 ? 'bg-yellow-400' : 'bg-orange-400'} ${secondsAgo < 3 ? 'animate-pulse' : ''}`} />
-                <span className={`text-xs font-mono tabular-nums ${secondsAgo < 3 ? 'text-emerald-400' : secondsAgo < 8 ? 'text-yellow-400' : 'text-orange-400'}`}>
-                  {secondsAgo < 2 ? 'Just now' : `${secondsAgo}s ago`}
-                </span>
-                <span className="text-zinc-600 text-xs font-mono tabular-nums">next in {nextRefreshIn}s</span>
+            {/* Center: Price */}
+            <div className="text-center shrink-0">
+              <div className={`text-lg sm:text-2xl font-mono font-bold tabular-nums leading-tight ${priceColor} transition-colors duration-200`}>
+                {latestCandle ? `$${latestCandle.close.toFixed(2)}` : '---'}
               </div>
-            )}
-            <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[10px]">XAUUSDT</Badge>
+              <div className="flex items-center gap-2 justify-center">
+                <span className={`text-xs sm:text-sm font-mono font-semibold tabular-nums ${changeColor}`}>
+                  {changeValue >= 0 ? '+' : ''}{changeValue.toFixed(2)}
+                </span>
+                <span className={`text-[10px] sm:text-xs font-mono tabular-nums ${changeColor}`}>
+                  ({changePercent >= 0 ? '+' : ''}{changePercent.toFixed(2)}%)
+                </span>
+              </div>
+            </div>
+
+            {/* Right: Status indicators */}
+            <div className="flex items-center gap-2 shrink-0">
+              {lastFetch && (
+                <div className="flex items-center gap-1.5">
+                  <div className={`w-1.5 h-1.5 rounded-full ${secondsAgo < 3 ? 'bg-emerald-400' : secondsAgo < 8 ? 'bg-yellow-400' : 'bg-orange-400'} ${secondsAgo < 3 ? 'animate-pulse' : ''}`} />
+                  <span className="text-[10px] sm:text-xs font-mono tabular-nums text-zinc-400">
+                    {secondsAgo < 2 ? 'Now' : `${secondsAgo}s`}
+                  </span>
+                </div>
+              )}
+              <button onClick={() => { fetchKlines(); fetchBotStatus(); fetchSignals(); }} disabled={isRefreshing}
+                className="p-1.5 rounded-md hover:bg-zinc-800 transition-colors disabled:opacity-50" title="Refresh">
+                <RefreshCw className={`w-3.5 h-3.5 text-zinc-400 ${isRefreshing ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Last Updated Banner */}
-      {lastFetch && (
-        <div className="bg-[#0b1019] border-b border-zinc-800/40">
-          <div className="max-w-[1600px] mx-auto px-4 py-1.5 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-[11px] text-zinc-500">
-              <Clock className="w-3 h-3" />
-              <span>Last updated: <span className="text-zinc-300 font-mono tabular-nums">{lastFetch.toLocaleTimeString()}</span></span>
-              <span className="text-zinc-600">|</span>
-              <span>Interval: <span className="text-yellow-400">10s</span></span>
-              <span className="text-zinc-600">|</span>
-              <span>Strategy: <span className="text-purple-400">RSI(1) + SMA(14)</span></span>
-            </div>
-            <button onClick={() => { fetchKlines(); fetchBotStatus(); fetchSignals(); }} disabled={isRefreshing}
-              className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-yellow-400 transition-colors disabled:opacity-50">
-              <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
-        </div>
-      )}
+      <main className="max-w-[1600px] mx-auto p-2 sm:p-3 lg:p-4">
 
-      <main className="max-w-[1600px] mx-auto p-3 sm:p-4">
-        {/* Stats Cards Row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-4">
-          <StatCard icon={<TrendingUp className={`w-4 h-4 ${isUp ? 'text-emerald-400' : 'text-red-400'}`} />}
-            label="Current Price" value={latestCandle ? `$${latestCandle.close.toFixed(2)}` : '---'}
-            subtext={latestCandle ? (isUp ? 'Bullish' : 'Bearish') : ''} subtextClass={isUp ? 'text-emerald-400' : 'text-red-400'} />
-          <StatCard icon={<BarChart3 className="w-4 h-4 text-zinc-400" />}
-            label="Session High" value={latestCandle ? `$${Math.max(...klineData.map(k => k.high)).toFixed(2)}` : '---'} subtext="Max peak" />
-          <StatCard icon={<Activity className="w-4 h-4 text-zinc-400" />}
-            label="Session Low" value={latestCandle ? `$${Math.min(...klineData.map(k => k.low)).toFixed(2)}` : '---'} subtext="Min trough" />
-          <StatCard icon={<BarChart3 className="w-4 h-4 text-zinc-400" />}
-            label="Volume" value={latestCandle ? `${(klineData.reduce((s, k) => s + k.volume, 0) / 1000).toFixed(1)}K` : '---'} subtext="3m candles" />
-          {/* RSI Cards */}
-          <StatCard
-            label="RSI(1)"
-            value={latestRSI ? latestRSI.rsi.toFixed(1) : '---'}
-            subtext={latestRSI ? (latestRSI.rsi >= 70 ? 'Overbought' : latestRSI.rsi <= 30 ? 'Oversold' : 'Neutral') : ''}
-            subtextClass={latestRSI ? (latestRSI.rsi >= 70 ? 'text-red-400' : latestRSI.rsi <= 30 ? 'text-emerald-400' : 'text-zinc-500') : ''}
-            icon={<Activity className={`w-4 h-4 ${latestRSI ? (latestRSI.rsi >= 70 ? 'text-red-400' : latestRSI.rsi <= 30 ? 'text-emerald-400' : 'text-purple-400') : 'text-zinc-400'}`} />}
-          />
-          <StatCard
-            label="SMA(14)"
-            value={latestRSI ? latestRSI.sma.toFixed(1) : '---'}
-            subtext={latestRSI ? (latestRSI.sma >= 70 ? 'Above 70' : latestRSI.sma <= 30 ? 'Below 30' : 'Between 30-70') : ''}
-            subtextClass={latestRSI ? (latestRSI.sma >= 70 ? 'text-red-400' : latestRSI.sma <= 30 ? 'text-emerald-400' : 'text-yellow-400') : ''}
-            icon={<TrendingUp className={`w-4 h-4 ${latestRSI ? (latestRSI.sma >= 70 ? 'text-red-400' : latestRSI.sma <= 30 ? 'text-emerald-400' : 'text-yellow-400') : 'text-zinc-400'}`} />}
-          />
-          {/* Bot Status Cards */}
-          <BotCard icon={botStatus?.active ? <Radio className="w-4 h-4 text-emerald-400" /> : <WifiOff className="w-4 h-4 text-red-400" />}
-            label="Bot Engine" value={botStatus?.active ? 'AUTO-RUNNING' : botStatus ? 'OFFLINE' : '---'}
-            subtext={botStatus?.engine?.lastCheckAt ? `Last: ${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago (${botStatus.engine.checkCount}x)` : 'Waiting to start'}
-            subtextClass={botStatus?.active ? 'text-emerald-400' : 'text-red-400'} />
-          <BotCard icon={<Bot className={`w-4 h-4 ${botStatus?.position === 'LONG' ? 'text-emerald-400' : botStatus?.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}`} />}
-            label="Position" value={botStatus?.position || 'NEUTRAL'}
-            subtext={`RSI: ${botStatus?.currentRSI?.toFixed(1) ?? '---'} | SMA: ${botStatus?.currentSMA?.toFixed(1) ?? '---'}`}
-            subtextClass={botStatus?.position === 'LONG' ? 'text-emerald-400' : 'text-zinc-500'} />
+        {/* === STATS CARDS (compact scrollable on mobile) === */}
+        <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide -mx-2 px-2 sm:mx-0 sm:px-0 sm:overflow-visible sm:grid sm:grid-cols-4 lg:grid-cols-4">
+          <MiniStat label="RSI(1)" value={latestRSI ? latestRSI.rsi.toFixed(1) : '---'}
+            color={latestRSI ? (latestRSI.rsi >= 70 ? 'text-red-400' : latestRSI.rsi <= 30 ? 'text-emerald-400' : 'text-purple-400') : 'text-zinc-400'}
+            hint={latestRSI ? (latestRSI.rsi >= 70 ? 'Overbought' : latestRSI.rsi <= 30 ? 'Oversold' : 'Neutral') : ''} />
+          <MiniStat label="SMA(14)" value={latestRSI ? latestRSI.sma.toFixed(1) : '---'}
+            color={latestRSI ? (latestRSI.sma >= 70 ? 'text-red-400' : latestRSI.sma <= 30 ? 'text-emerald-400' : 'text-yellow-400') : 'text-zinc-400'}
+            hint={latestRSI ? (latestRSI.sma >= 70 ? 'Above 70' : latestRSI.sma <= 30 ? 'Below 30' : 'Neutral') : ''} />
+          <MiniStat label="Position" value={botStatus?.position || '---'}
+            color={botStatus?.position === 'LONG' ? 'text-emerald-400' : 'text-zinc-400'}
+            hint={`Bot: ${botStatus?.active ? 'AUTO' : 'OFF'}`} />
+          <MiniStat label="Signals" value={`${clientSignals.length}B/${clientSignals.filter(s => s.type === 'SELL').length}S`}
+            color="text-zinc-300" hint={botStatus?.engine?.checkCount ? `${botStatus.engine.checkCount} checks` : ''} />
         </div>
 
-        {/* Recent Signals Banner — shows latest 2 signals from client-side calculation */}
+        {/* === RECENT SIGNALS === */}
         {recentClientSignals.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+          <div className="flex gap-2 mb-3 overflow-x-auto pb-1 scrollbar-hide -mx-2 px-2 sm:mx-0 sm:px-0">
             {recentClientSignals.map((sig, i) => (
-              <div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${
-                sig.type === 'BUY'
-                  ? 'bg-emerald-500/5 border-emerald-500/20'
-                  : 'bg-red-500/5 border-red-500/20'
+              <div key={i} className={`flex items-center gap-2 px-3 py-2 rounded-lg border shrink-0 min-w-[200px] sm:min-w-0 ${
+                sig.type === 'BUY' ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20'
               }`}>
                 {sig.type === 'BUY'
-                  ? <ArrowUpCircle className="w-5 h-5 text-emerald-400 shrink-0" />
-                  : <ArrowDownCircle className="w-5 h-5 text-red-400 shrink-0" />}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`font-mono font-bold text-sm ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
+                  ? <ArrowUpCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                  : <ArrowDownCircle className="w-4 h-4 text-red-400 shrink-0" />}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`font-mono font-bold text-xs ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
                       {sig.type}
                     </span>
-                    <span className="font-mono font-bold text-sm text-white">
-                      ${sig.price.toFixed(2)}
-                    </span>
-                    <Badge variant="outline" className="text-[9px] border-zinc-700 text-zinc-500">
-                      RSI {sig.rsi.toFixed(1)} | SMA {sig.rsiSma.toFixed(1)}
-                    </Badge>
+                    <span className="font-mono font-bold text-xs text-white">${sig.price.toFixed(2)}</span>
                   </div>
-                  <div className="text-[10px] text-zinc-500 mt-0.5 font-mono">
-                    {new Date(sig.candleTime * 1000).toLocaleString()}
+                  <div className="text-[9px] text-zinc-500 font-mono">
+                    RSI {sig.rsi.toFixed(1)} / SMA {sig.rsiSma.toFixed(1)}
                   </div>
                 </div>
               </div>
@@ -301,96 +273,81 @@ export default function Home() {
           </div>
         )}
 
-        {/* Main Chart */}
-        <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden shadow-2xl shadow-black/40 mb-4">
+        {/* === CHART === */}
+        <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden shadow-2xl shadow-black/40 mb-3">
           <CardContent className="p-0">
-            <div className="h-[380px] sm:h-[480px] lg:h-[560px]">
-              {loading ? (
-                <div className="flex items-center justify-center h-full bg-[#0a0e17]">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-10 h-10 border-2 border-yellow-500/30 border-t-yellow-500 rounded-full animate-spin" />
-                    <span className="text-zinc-400 text-sm">Fetching XAU/USDT market data...</span>
-                  </div>
+            {loading ? (
+              <div className="flex items-center justify-center bg-[#0a0e17]" style={{ height: '50vh' }}>
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-10 h-10 border-2 border-yellow-500/30 border-t-yellow-500 rounded-full animate-spin" />
+                  <span className="text-zinc-400 text-sm">Fetching XAU/USDT market data...</span>
                 </div>
-              ) : error ? (
-                <div className="flex items-center justify-center h-full bg-[#0a0e17]">
-                  <div className="flex flex-col items-center gap-3 text-center">
-                    <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center">
-                      <Activity className="w-5 h-5 text-red-400" />
-                    </div>
-                    <span className="text-zinc-400 text-sm">{error}</span>
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center bg-[#0a0e17]" style={{ height: '50vh' }}>
+                <div className="flex flex-col items-center gap-3 text-center px-4">
+                  <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center">
+                    <Activity className="w-5 h-5 text-red-400" />
                   </div>
+                  <span className="text-zinc-400 text-sm">{error}</span>
                 </div>
-              ) : (
-                <GoldChart data={klineData} lastFetchTime={lastFetch} />
-              )}
-            </div>
+              </div>
+            ) : (
+              <GoldChart data={klineData} lastFetchTime={lastFetch} />
+            )}
           </CardContent>
         </Card>
 
-        {/* Bot Dashboard: Signals + Stats */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+        {/* === DASHBOARD: Signal Log + Setup === */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
           {/* Signal Log */}
           <Card className="lg:col-span-2 border-zinc-800/60 bg-[#0d1117] overflow-hidden">
             <CardContent className="p-0">
-              <div className="px-4 py-3 border-b border-zinc-800/40 flex items-center justify-between">
+              <div className="px-3 sm:px-4 py-2.5 border-b border-zinc-800/40 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Bot className="w-4 h-4 text-purple-400" />
+                  <Bot className="w-4 h-4 text-purple-400 shrink-0" />
                   <span className="text-sm font-semibold">Signal Log</span>
-                  <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-400">
-                    {botStats ? `${botStats.totalSignals} signals` : '...'}
-                  </Badge>
+                  {botStats && (
+                    <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-400">
+                      {botStats.totalSignals}
+                    </Badge>
+                  )}
                 </div>
                 {botStats && botStats.totalSignals > 0 && (
-                  <div className="flex items-center gap-3 text-xs">
+                  <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs">
                     <span className="text-zinc-500">
-                      Win Rate: <span className={botStats.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}>{botStats.winRate}%</span>
+                      WR: <span className={botStats.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}>{botStats.winRate}%</span>
                     </span>
                     <span className="text-zinc-500">
-                      P&L: <span className={botStats.totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}>${botStats.totalPnL.toFixed(2)}</span>
+                      P&amp;L: <span className={botStats.totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}>${botStats.totalPnL.toFixed(2)}</span>
                     </span>
                   </div>
                 )}
               </div>
-              <div className="max-h-[300px] overflow-y-auto">
+              <div className="max-h-[250px] sm:max-h-[300px] overflow-y-auto">
                 {signals.length === 0 ? (
-                  <div className="flex items-center justify-center py-12 text-zinc-600 text-sm">
-                    <Bot className="w-4 h-4 mr-2" /> No signals recorded yet — bot engine checks every 3 minutes
+                  <div className="flex items-center justify-center py-10 text-zinc-600 text-sm px-4 text-center">
+                    <Bot className="w-4 h-4 mr-2 shrink-0" /> No signals yet — bot checks every 3min
                   </div>
                 ) : (
-                  <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-[#0d1117] z-10">
-                      <tr className="text-left text-[11px] text-zinc-500 uppercase tracking-wider border-b border-zinc-800/40">
-                        <th className="px-4 py-2">Type</th>
-                        <th className="px-4 py-2">Price</th>
-                        <th className="px-4 py-2">RSI</th>
-                        <th className="px-4 py-2">SMA</th>
-                        <th className="px-4 py-2">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {signals.map((sig) => (
-                        <tr key={sig.id} className="border-b border-zinc-800/20 hover:bg-zinc-800/20 transition-colors">
-                          <td className="px-4 py-2">
-                            <div className="flex items-center gap-1.5">
-                              {sig.type === 'BUY'
-                                ? <ArrowUpCircle className="w-3.5 h-3.5 text-emerald-400" />
-                                : <ArrowDownCircle className="w-3.5 h-3.5 text-red-400" />}
-                              <span className={`font-mono font-bold text-xs ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {sig.type}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-2 font-mono text-xs tabular-nums text-zinc-300">${sig.price.toFixed(2)}</td>
-                          <td className="px-4 py-2 font-mono text-xs tabular-nums text-zinc-400">{sig.rsi.toFixed(1)}</td>
-                          <td className="px-4 py-2 font-mono text-xs tabular-nums text-yellow-400">{sig.rsiSma.toFixed(1)}</td>
-                          <td className="px-4 py-2 font-mono text-xs tabular-nums text-zinc-500">
-                            {new Date(sig.createdAt).toLocaleString()}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="divide-y divide-zinc-800/20">
+                    {signals.map((sig) => (
+                      <div key={sig.id} className="flex items-center gap-3 px-3 sm:px-4 py-2.5 hover:bg-zinc-800/20 transition-colors">
+                        {sig.type === 'BUY'
+                          ? <ArrowUpCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                          : <ArrowDownCircle className="w-4 h-4 text-red-400 shrink-0" />}
+                        <span className={`font-mono font-bold text-xs w-8 shrink-0 ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {sig.type}
+                        </span>
+                        <span className="font-mono text-xs tabular-nums text-zinc-300 shrink-0">${sig.price.toFixed(2)}</span>
+                        <span className="font-mono text-xs tabular-nums text-zinc-500 shrink-0 hidden sm:inline">{sig.rsi.toFixed(1)}</span>
+                        <span className="font-mono text-xs tabular-nums text-yellow-400 shrink-0 hidden sm:inline">{sig.rsiSma.toFixed(1)}</span>
+                        <span className="font-mono text-[10px] tabular-nums text-zinc-600 ml-auto shrink-0">
+                          {new Date(sig.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </CardContent>
@@ -398,107 +355,93 @@ export default function Home() {
 
           {/* Bot Setup Guide */}
           <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 mb-4">
-                <Wifi className="w-4 h-4 text-emerald-400" />
+            <CardContent className="p-3 sm:p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Wifi className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span className="text-sm font-semibold">24/7 Bot Setup</span>
               </div>
 
               <div className="space-y-3 text-xs">
-                <SetupStep number={1} title="Deploy on Render" done description="Already deployed at your Render URL" />
+                <SetupStep number={1} title="Deploy on Render" done description="Already deployed" />
                 <SetupStep number={2} title="Set UptimeRobot" done={false} description={
                   <>
-                    Go to <span className="text-yellow-400">uptimerobot.com</span> and create a new monitor:
-                    <div className="mt-2 p-2 rounded bg-zinc-900/60 border border-zinc-800/60 font-mono text-[10px] text-zinc-400 break-all">
+                    Go to <span className="text-yellow-400">uptimerobot.com</span> and create a monitor:
+                    <div className="mt-1.5 p-2 rounded bg-zinc-900/60 border border-zinc-800/60 font-mono text-[10px] text-zinc-400 break-all">
                       https://your-app.onrender.com/api/bot/check
                     </div>
-                    <div className="mt-1.5 space-y-1">
+                    <div className="mt-1 space-y-0.5">
                       <div className="flex items-center gap-2">
-                        <span className="text-zinc-500">Monitor Type:</span>
+                        <span className="text-zinc-500">Type:</span>
                         <span className="text-zinc-300">HTTP(s)</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-zinc-500">Interval:</span>
-                        <span className="text-yellow-400">5 minutes (free tier min)</span>
+                        <span className="text-yellow-400">5 min</span>
                       </div>
                     </div>
                   </>
                 } />
                 <SetupStep number={3} title="Bot Runs Autonomously" done={false} description={
                   <>
-                    The bot engine runs <span className="text-yellow-400">automatically every 3 minutes</span> — aligned with candle closes.
-                    UptimeRobot just keeps the Render server awake (prevents cold sleep).
-                    The bot works independently of the ping interval.
+                    Engine runs <span className="text-yellow-400">every 3min</span> on its own.
+                    UptimeRobot just keeps Render awake.
                   </>
                 } />
               </div>
 
               {/* Strategy Info */}
-              <div className="mt-4 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
-                <div className="text-[10px] text-purple-400 uppercase tracking-wider font-semibold mb-2">Strategy Details</div>
-                <div className="space-y-1.5 text-xs text-zinc-400">
-                  <div className="flex justify-between">
-                    <span>RSI Length</span><span className="font-mono text-zinc-300">1</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>SMA Length</span><span className="font-mono text-zinc-300">14</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Buy Signal</span><span className="font-mono text-emerald-400">SMA cross above 30</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Sell Signal</span><span className="font-mono text-red-400">SMA cross below 70</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Timeframe</span><span className="font-mono text-zinc-300">3 Minutes</span>
-                  </div>
+              <div className="mt-3 p-2.5 rounded-lg bg-purple-500/5 border border-purple-500/20">
+                <div className="text-[9px] sm:text-[10px] text-purple-400 uppercase tracking-wider font-semibold mb-1.5">Strategy</div>
+                <div className="space-y-1 text-[11px] text-zinc-400">
+                  <div className="flex justify-between"><span>RSI / SMA</span><span className="font-mono text-zinc-300">1 / 14</span></div>
+                  <div className="flex justify-between"><span>Buy</span><span className="font-mono text-emerald-400">SMA above 30</span></div>
+                  <div className="flex justify-between"><span>Sell</span><span className="font-mono text-red-400">SMA below 70</span></div>
+                  <div className="flex justify-between"><span>TF</span><span className="font-mono text-zinc-300">3m</span></div>
                 </div>
               </div>
+
+              {/* Engine Status */}
+              {botStatus?.engine && (
+                <div className="mt-3 p-2.5 rounded-lg bg-zinc-900/60 border border-zinc-800/40">
+                  <div className="text-[9px] sm:text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Engine Status</div>
+                  <div className="space-y-1 text-[11px] font-mono text-zinc-500">
+                    <div>Checks: <span className="text-zinc-300">{botStatus.engine.checkCount}</span></div>
+                    <div>Errors: <span className={botStatus.engine.errorCount > 0 ? 'text-red-400' : 'text-zinc-300'}>{botStatus.engine.errorCount}</span></div>
+                    {botStatus.engine.lastCheckAt && (
+                      <div>Last: <span className="text-zinc-300">{new Date(botStatus.engine.lastCheckAt).toLocaleTimeString()}</span></div>
+                    )}
+                    {botStatus.engine.lastResult && (
+                      <div className="text-[10px] text-zinc-600 truncate" title={botStatus.engine.lastResult}>{botStatus.engine.lastResult}</div>
+                    )}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
 
-        {/* Bottom Info */}
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-600 px-1">
-          <span>RSI(1) + SMA(14) Strategy | Binance Futures | 3-minute candles</span>
-          <span>Bot endpoint: /api/bot/check (ping every 5min with UptimeRobot to keep alive)</span>
+        {/* === FOOTER === */}
+        <div className="flex items-center justify-between text-[10px] text-zinc-600 px-1">
+          <span>RSI(1) + SMA(14) | Binance Futures | 3m</span>
+          <span className="hidden sm:inline">Bot: /api/bot/check (UptimeRobot 5min)</span>
         </div>
       </main>
     </div>
   );
 }
 
-function StatCard({ icon, label, value, subtext, subtextClass = 'text-zinc-500' }: {
-  icon: React.ReactNode; label: string; value: string; subtext?: string; subtextClass?: string;
+/* === Compact horizontal stat pill (mobile scrollable) === */
+function MiniStat({ label, value, color, hint }: {
+  label: string; value: string; color: string; hint?: string;
 }) {
   return (
-    <Card className="border-zinc-800/60 bg-[#0d1117] hover:border-zinc-700/60 transition-colors">
-      <CardContent className="p-3 sm:p-4">
-        <div className="flex items-center gap-2 mb-2">
-          {icon}
-          <span className="text-xs text-zinc-500 uppercase tracking-wider">{label}</span>
-        </div>
-        <div className="text-lg sm:text-xl font-mono font-bold text-white tabular-nums">{value}</div>
-        {subtext && <span className={`text-[11px] ${subtextClass}`}>{subtext}</span>}
-      </CardContent>
-    </Card>
-  );
-}
-
-function BotCard({ icon, label, value, subtext, subtextClass = 'text-zinc-500' }: {
-  icon: React.ReactNode; label: string; value: string; subtext?: string; subtextClass?: string;
-}) {
-  return (
-    <Card className="border-zinc-800/60 bg-[#0d1117] hover:border-zinc-700/60 transition-colors">
-      <CardContent className="p-3 sm:p-4">
-        <div className="flex items-center gap-2 mb-2">
-          {icon}
-          <span className="text-xs text-zinc-500 uppercase tracking-wider">{label}</span>
-        </div>
-        <div className="text-lg sm:text-xl font-mono font-bold text-white tabular-nums">{value}</div>
-        {subtext && <span className={`text-[11px] ${subtextClass}`}>{subtext}</span>}
-      </CardContent>
-    </Card>
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0d1117] border border-zinc-800/60 shrink-0 sm:shrink min-w-[110px] sm:min-w-0">
+      <div className="min-w-0">
+        <div className="text-[9px] sm:text-[10px] text-zinc-500 uppercase tracking-wider">{label}</div>
+        <div className={`text-sm sm:text-base font-mono font-bold tabular-nums leading-tight ${color}`}>{value}</div>
+        {hint && <div className="text-[9px] text-zinc-600 truncate">{hint}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -506,15 +449,15 @@ function SetupStep({ number, title, description, done }: {
   number: number; title: string; description: React.ReactNode; done: boolean;
 }) {
   return (
-    <div className="flex gap-3">
+    <div className="flex gap-2.5">
       <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold mt-0.5 ${
         done ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
       }`}>
-        {done ? '✓' : number}
+        {done ? '\u2713' : number}
       </div>
-      <div>
-        <div className="font-semibold text-zinc-300">{title}</div>
-        <div className="text-zinc-500 mt-0.5">{description}</div>
+      <div className="min-w-0">
+        <div className="font-semibold text-zinc-300 text-xs">{title}</div>
+        <div className="text-zinc-500 mt-0.5 text-[11px] leading-relaxed">{description}</div>
       </div>
     </div>
   );

@@ -333,24 +333,35 @@ export default function Home() {
                     <Bot className="w-4 h-4 mr-2 shrink-0" /> No signals yet — bot checks every 3min
                   </div>
                 ) : (
-                  <div className="divide-y divide-zinc-800/20">
-                    {signals.map((sig) => (
-                      <div key={sig.id} className="flex items-center gap-3 px-3 sm:px-4 py-2.5 hover:bg-zinc-800/20 transition-colors">
-                        {sig.type === 'BUY'
-                          ? <ArrowUpCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                          : <ArrowDownCircle className="w-4 h-4 text-red-400 shrink-0" />}
-                        <span className={`font-mono font-bold text-xs w-8 shrink-0 ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {sig.type}
-                        </span>
-                        <span className="font-mono text-xs tabular-nums text-zinc-300 shrink-0">${sig.price.toFixed(2)}</span>
-                        <span className="font-mono text-xs tabular-nums text-zinc-500 shrink-0 hidden sm:inline">{sig.rsi.toFixed(1)}</span>
-                        <span className="font-mono text-xs tabular-nums text-yellow-400 shrink-0 hidden sm:inline">{sig.rsiSma.toFixed(1)}</span>
-                        <span className="font-mono text-[10px] tabular-nums text-zinc-600 ml-auto shrink-0">
-                          {new Date(sig.createdAt).toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    {/* Table Header */}
+                    <div className="flex items-center gap-3 px-3 sm:px-4 py-2 bg-zinc-900/40 border-b border-zinc-800/30 text-[9px] sm:text-[10px] text-zinc-600 uppercase tracking-wider font-semibold">
+                      <span className="w-4 shrink-0" />
+                      <span className="w-8 shrink-0">Type</span>
+                      <span className="shrink-0">Price</span>
+                      <span className="shrink-0 hidden sm:inline">RSI</span>
+                      <span className="shrink-0 hidden sm:inline">SMA</span>
+                      <span className="ml-auto shrink-0">Time</span>
+                    </div>
+                    <div className="divide-y divide-zinc-800/20">
+                      {signals.map((sig) => (
+                        <div key={sig.id} className="flex items-center gap-3 px-3 sm:px-4 py-2.5 hover:bg-zinc-800/20 transition-colors">
+                          {sig.type === 'BUY'
+                            ? <ArrowUpCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                            : <ArrowDownCircle className="w-4 h-4 text-red-400 shrink-0" />}
+                          <span className={`font-mono font-bold text-xs w-8 shrink-0 ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {sig.type}
+                          </span>
+                          <span className="font-mono text-xs tabular-nums text-zinc-300 shrink-0">${sig.price.toFixed(2)}</span>
+                          <span className="font-mono text-xs tabular-nums text-zinc-500 shrink-0 hidden sm:inline">{sig.rsi.toFixed(1)}</span>
+                          <span className="font-mono text-xs tabular-nums text-yellow-400 shrink-0 hidden sm:inline">{sig.rsiSma.toFixed(1)}</span>
+                          <span className="font-mono text-[10px] sm:text-xs tabular-nums text-zinc-400 ml-auto shrink-0 whitespace-nowrap">
+                            {new Date(sig.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             </CardContent>

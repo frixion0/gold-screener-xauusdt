@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff } from 'lucide-react';
+import { runStrategy } from '@/lib/rsi';
 
 const GoldChart = dynamic(() => import('@/components/GoldChart'), {
   ssr: false,
@@ -162,6 +163,12 @@ export default function Home() {
   const isUp = prevCandle ? latestCandle!.close >= prevCandle.close : true;
   const nextRefreshIn = 10 - (secondsAgo % 10);
 
+  // Client-side RSI calculation from fetched kline data
+  const { rsiPoints, signals: clientSignals } = runStrategy(klineData, 1, 14);
+  const latestRSI = rsiPoints.length > 0 ? rsiPoints[rsiPoints.length - 1] : null;
+  const recentClientSignals = clientSignals.slice(-2).reverse(); // Last 2 signals
+  const recentDBSignals = signals.slice(0, 2); // Latest 2 from DB
+
   return (
     <div className="min-h-screen bg-[#080b12] text-white">
       {/* Top Navigation */}
@@ -225,7 +232,7 @@ export default function Home() {
 
       <main className="max-w-[1600px] mx-auto p-3 sm:p-4">
         {/* Stats Cards Row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-4">
           <StatCard icon={<TrendingUp className={`w-4 h-4 ${isUp ? 'text-emerald-400' : 'text-red-400'}`} />}
             label="Current Price" value={latestCandle ? `$${latestCandle.close.toFixed(2)}` : '---'}
             subtext={latestCandle ? (isUp ? 'Bullish' : 'Bearish') : ''} subtextClass={isUp ? 'text-emerald-400' : 'text-red-400'} />
@@ -235,16 +242,64 @@ export default function Home() {
             label="Session Low" value={latestCandle ? `$${Math.min(...klineData.map(k => k.low)).toFixed(2)}` : '---'} subtext="Min trough" />
           <StatCard icon={<BarChart3 className="w-4 h-4 text-zinc-400" />}
             label="Volume" value={latestCandle ? `${(klineData.reduce((s, k) => s + k.volume, 0) / 1000).toFixed(1)}K` : '---'} subtext="3m candles" />
+          {/* RSI Cards */}
+          <StatCard
+            label="RSI(1)"
+            value={latestRSI ? latestRSI.rsi.toFixed(1) : '---'}
+            subtext={latestRSI ? (latestRSI.rsi >= 70 ? 'Overbought' : latestRSI.rsi <= 30 ? 'Oversold' : 'Neutral') : ''}
+            subtextClass={latestRSI ? (latestRSI.rsi >= 70 ? 'text-red-400' : latestRSI.rsi <= 30 ? 'text-emerald-400' : 'text-zinc-500') : ''}
+            icon={<Activity className={`w-4 h-4 ${latestRSI ? (latestRSI.rsi >= 70 ? 'text-red-400' : latestRSI.rsi <= 30 ? 'text-emerald-400' : 'text-purple-400') : 'text-zinc-400'}`} />}
+          />
+          <StatCard
+            label="SMA(14)"
+            value={latestRSI ? latestRSI.sma.toFixed(1) : '---'}
+            subtext={latestRSI ? (latestRSI.sma >= 70 ? 'Above 70' : latestRSI.sma <= 30 ? 'Below 30' : 'Between 30-70') : ''}
+            subtextClass={latestRSI ? (latestRSI.sma >= 70 ? 'text-red-400' : latestRSI.sma <= 30 ? 'text-emerald-400' : 'text-yellow-400') : ''}
+            icon={<TrendingUp className={`w-4 h-4 ${latestRSI ? (latestRSI.sma >= 70 ? 'text-red-400' : latestRSI.sma <= 30 ? 'text-emerald-400' : 'text-yellow-400') : 'text-zinc-400'}`} />}
+          />
           {/* Bot Status Cards */}
           <BotCard icon={botStatus?.active ? <Radio className="w-4 h-4 text-emerald-400" /> : <WifiOff className="w-4 h-4 text-red-400" />}
             label="Bot Engine" value={botStatus?.active ? 'AUTO-RUNNING' : botStatus ? 'OFFLINE' : '---'}
-            subtext={botStatus?.engine?.lastCheckAt ? `Last check: ${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago (${botStatus.engine.checkCount} total)` : 'Waiting to start'}
+            subtext={botStatus?.engine?.lastCheckAt ? `Last: ${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago (${botStatus.engine.checkCount}x)` : 'Waiting to start'}
             subtextClass={botStatus?.active ? 'text-emerald-400' : 'text-red-400'} />
           <BotCard icon={<Bot className={`w-4 h-4 ${botStatus?.position === 'LONG' ? 'text-emerald-400' : botStatus?.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}`} />}
             label="Position" value={botStatus?.position || 'NEUTRAL'}
             subtext={`RSI: ${botStatus?.currentRSI?.toFixed(1) ?? '---'} | SMA: ${botStatus?.currentSMA?.toFixed(1) ?? '---'}`}
             subtextClass={botStatus?.position === 'LONG' ? 'text-emerald-400' : 'text-zinc-500'} />
         </div>
+
+        {/* Recent Signals Banner — shows latest 2 signals from client-side calculation */}
+        {recentClientSignals.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+            {recentClientSignals.map((sig, i) => (
+              <div key={i} className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${
+                sig.type === 'BUY'
+                  ? 'bg-emerald-500/5 border-emerald-500/20'
+                  : 'bg-red-500/5 border-red-500/20'
+              }`}>
+                {sig.type === 'BUY'
+                  ? <ArrowUpCircle className="w-5 h-5 text-emerald-400 shrink-0" />
+                  : <ArrowDownCircle className="w-5 h-5 text-red-400 shrink-0" />}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`font-mono font-bold text-sm ${sig.type === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {sig.type}
+                    </span>
+                    <span className="font-mono font-bold text-sm text-white">
+                      ${sig.price.toFixed(2)}
+                    </span>
+                    <Badge variant="outline" className="text-[9px] border-zinc-700 text-zinc-500">
+                      RSI {sig.rsi.toFixed(1)} | SMA {sig.rsiSma.toFixed(1)}
+                    </Badge>
+                  </div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5 font-mono">
+                    {new Date(sig.candleTime * 1000).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Main Chart */}
         <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden shadow-2xl shadow-black/40 mb-4">
@@ -300,7 +355,7 @@ export default function Home() {
               <div className="max-h-[300px] overflow-y-auto">
                 {signals.length === 0 ? (
                   <div className="flex items-center justify-center py-12 text-zinc-600 text-sm">
-                    <Bot className="w-4 h-4 mr-2" /> Waiting for signals... (need UptimeRobot pinging /api/bot/check)
+                    <Bot className="w-4 h-4 mr-2" /> No signals recorded yet — bot engine checks every 3 minutes
                   </div>
                 ) : (
                   <table className="w-full text-sm">

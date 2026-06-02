@@ -348,6 +348,7 @@ async function runBotCheck(): Promise<void> {
     }
   } catch (error) {
     engineState.errorCount++;
+    engineState.lastCheckAt = new Date().toISOString();
     engineState.lastResult = `ERROR: ${error instanceof Error ? error.message : 'Unknown'}`;
     console.error(`[Bot Engine] Check #${engineState.checkCount} failed:`, error);
   } finally {

@@ -60,9 +60,22 @@ export default function Home() {
   const fetchKlines = useCallback(async (isBackground = false) => {
     try {
       if (!isBackground) setIsRefreshing(true);
-      const res = await fetch('/api/klines?symbol=XAUUSDT&interval=3m&limit=200');
-      if (!res.ok) throw new Error('Failed to fetch data');
-      const data: KlineData[] = await res.json();
+      // Fetch directly from Binance Futures (client-side) to bypass server IP blocks on cloud hosts
+      const res = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=XAUUSDT&interval=3m&limit=200');
+      if (!res.ok) throw new Error(`Binance API error: ${res.status}`);
+      const rawData: (string | number)[][] = await res.json();
+      const data: KlineData[] = rawData.map((k) => ({
+        time: Math.floor(Number(k[0]) / 1000),
+        open: parseFloat(String(k[1])),
+        high: parseFloat(String(k[2])),
+        low: parseFloat(String(k[3])),
+        close: parseFloat(String(k[4])),
+        volume: parseFloat(String(k[5])),
+        quoteVolume: parseFloat(String(k[7])),
+        trades: Number(k[8]),
+        takerBuyBase: parseFloat(String(k[9])),
+        takerBuyQuote: parseFloat(String(k[10])),
+      }));
       setKlineData(data);
       setLastFetch(new Date());
       setError(null);

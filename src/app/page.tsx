@@ -90,6 +90,23 @@ interface MudrexPosition {
   takeprofit: { price: string; order_id: string; order_type: string } | null;
 }
 
+interface TradeLog {
+  id: number;
+  source: string;
+  orderType: string;
+  price: number;
+  quantity: number;
+  leverage: number;
+  slPrice: number | null;
+  tpPrice: number;
+  slPercent: number | null;
+  tpPercent: number | null;
+  orderId: string | null;
+  status: string;
+  result: string | null;
+  createdAt: string;
+}
+
 interface BotStats {
   totalSignals: number;
   totalBuys: number;
@@ -129,6 +146,9 @@ export default function Home() {
   const [brokerFunds, setBrokerFunds] = useState<MudrexFunds | null>(null);
   const [brokerPositions, setBrokerPositions] = useState<MudrexPosition[]>([]);
   const [brokerError, setBrokerError] = useState<string | null>(null);
+
+  // Trade log
+  const [recentTrades, setRecentTrades] = useState<TradeLog[]>([]);
 
   // Manual trade state
   const [autoTrade, setAutoTrade] = useState(false);
@@ -220,6 +240,16 @@ export default function Home() {
     } catch { /* silent */ }
   }, []);
 
+  const fetchRecentTrades = useCallback(async () => {
+    try {
+      const res = await fetch('/api/bot/trades?limit=2');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) setRecentTrades(data.trades || []);
+      }
+    } catch { /* silent */ }
+  }, []);
+
   // Computed values (needed by callbacks below)
   const latestCandle = klineData.length > 0 ? klineData[klineData.length - 1] : null;
   const prevCandle = klineData.length > 1 ? klineData[klineData.length - 2] : null;
@@ -230,8 +260,28 @@ export default function Home() {
     try {
       const price = latestCandle?.close || 0;
       if (!price) { setTradeMsg('No price data available'); setTradeLoading(false); return; }
-      const slPrice = tradeSL ? parseFloat(tradeSL) : undefined;
-      const tpPrice = tradeTP ? parseFloat(tradeTP) : undefined;
+
+      // Calculate SL/TP from % or direct $
+      let slPrice = tradeSL ? parseFloat(tradeSL) : undefined;
+      let tpPrice = tradeTP ? parseFloat(tradeTP) : undefined;
+      let slPercent: number | undefined;
+      let tpPercent: number | undefined;
+
+      // If SL is a percentage (like 0.05), calculate from price
+      if (slPrice !== undefined && slPrice < 1) {
+        slPercent = slPrice;
+        slPrice = orderType === 'LONG'
+          ? price * (1 - slPrice / 100)
+          : price * (1 + slPrice / 100);
+      }
+      // If TP is a percentage (like 0.15), calculate from price
+      if (tpPrice !== undefined && tpPrice < 1) {
+        tpPercent = tpPrice;
+        tpPrice = orderType === 'LONG'
+          ? price * (1 + tpPrice / 100)
+          : price * (1 - tpPrice / 100);
+      }
+
       const res = await fetch('/api/broker/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -240,12 +290,13 @@ export default function Home() {
           leverage: parseInt(tradeLeverage), trigger_type: 'MARKET',
           is_stoploss: !!slPrice, is_takeprofit: !!tpPrice,
           stoploss_price: slPrice, takeprofit_price: tpPrice,
+          sl_percent: slPercent, tp_percent: tpPercent,
         }),
       });
       const json = await res.json();
       if (json.success) {
         setTradeMsg(`${orderType} order placed ✅ — ID: ${json.data?.order_id?.slice(0, 8)}...`);
-        setTimeout(() => fetchBroker(), 2000);
+        setTimeout(() => { fetchBroker(); fetchRecentTrades(); }, 2000);
       } else {
         setTradeMsg(`Order failed: ${json.error}`);
       }
@@ -254,7 +305,7 @@ export default function Home() {
     } finally {
       setTradeLoading(false);
     }
-  }, [latestCandle, tradeQty, tradeLeverage, tradeSL, tradeTP, fetchBroker, klineData]);
+  }, [latestCandle, tradeQty, tradeLeverage, tradeSL, tradeTP, fetchBroker, fetchRecentTrades, klineData]);
 
   const closePosition = useCallback(async (pos: MudrexPosition) => {
     setTradeLoading(true);
@@ -337,13 +388,14 @@ export default function Home() {
     fetchBotStatus();
     fetchSignals();
     fetchBroker();
-  }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker]);
+    fetchRecentTrades();
+  }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker, fetchRecentTrades]);
 
   // Auto-refresh every 10 seconds
   useEffect(() => {
-    const interval = setInterval(() => { fetchKlines(true); fetchBotStatus(); fetchSignals(); fetchBroker(); }, 10000);
+    const interval = setInterval(() => { fetchKlines(true); fetchBotStatus(); fetchSignals(); fetchBroker(); fetchRecentTrades(); }, 10000);
     return () => clearInterval(interval);
-  }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker]);
+  }, [fetchKlines, fetchBotStatus, fetchSignals, fetchBroker, fetchRecentTrades]);
 
   const secondsAgo = useSecondsAgo(lastFetch);
   const isUp = prevCandle ? latestCandle!.close >= prevCandle.close : true;
@@ -709,6 +761,89 @@ export default function Home() {
             </CardContent>
           </Card>
 
+          {/* Recent Trade Log — Newest 2 Trades */}
+          <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Activity className="w-4 h-4 text-yellow-400" />
+                <span className="text-sm font-semibold">Recent Trades</span>
+                <Badge variant="outline" className="text-[10px] border-yellow-500/30 text-yellow-400">
+                  {recentTrades.length > 0 ? 'Live' : 'No trades yet'}
+                </Badge>
+              </div>
+              {recentTrades.length === 0 ? (
+                <div className="p-4 rounded-lg bg-zinc-900/40 border border-zinc-800/30 text-center">
+                  <div className="text-zinc-600 text-xs">No trades executed yet. Enable auto-trade or place a manual order.</div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {recentTrades.map((trade) => (
+                    <div key={trade.id} className={`p-3 rounded-lg border ${
+                      trade.status === 'FILLED'
+                        ? trade.orderType === 'LONG'
+                          ? 'bg-emerald-500/5 border-emerald-500/20'
+                          : 'bg-red-500/5 border-red-500/20'
+                        : 'bg-orange-500/5 border-orange-500/20'
+                    }`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-2">
+                          {trade.orderType === 'LONG'
+                            ? <ArrowUpCircle className="w-3.5 h-3.5 text-emerald-400" />
+                            : <ArrowDownCircle className="w-3.5 h-3.5 text-red-400" />}
+                          <span className={`font-mono font-bold text-xs ${trade.orderType === 'LONG' ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {trade.orderType}
+                          </span>
+                          <span className="font-mono text-xs text-white font-semibold">${trade.price.toFixed(2)}</span>
+                          <Badge variant="outline" className={`text-[8px] ${
+                            trade.source === 'AUTO'
+                              ? 'border-purple-500/30 text-purple-400'
+                              : 'border-zinc-700 text-zinc-400'
+                          }`}>
+                            {trade.source}
+                          </Badge>
+                        </div>
+                        <div className={`text-[9px] font-mono font-bold ${
+                          trade.status === 'FILLED' ? 'text-emerald-400' : 'text-orange-400'
+                        }`}>
+                          {trade.status}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Qty</span>
+                          <span className="font-mono text-zinc-300">{trade.quantity} @ {trade.leverage}x</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">SL</span>
+                          <span className="font-mono text-red-400">
+                            {trade.slPrice ? `$${trade.slPrice.toFixed(2)}` : 'none'}
+                            {trade.slPercent ? ` (${trade.slPercent}%)` : ''}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">TP</span>
+                          <span className="font-mono text-emerald-400">
+                            {trade.tpPrice ? `$${trade.tpPrice.toFixed(2)}` : 'none'}
+                            {trade.tpPercent ? ` (${trade.tpPercent}%)` : ''}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Time</span>
+                          <span className="font-mono text-zinc-500">{new Date(trade.createdAt).toLocaleTimeString()}</span>
+                        </div>
+                      </div>
+                      {trade.orderId && (
+                        <div className="mt-1 pt-1 border-t border-zinc-800/20 text-[8px] text-zinc-600 font-mono">
+                          ID: {trade.orderId.slice(0, 16)}...
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Manual Trade Panel */}
           <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden">
             <CardContent className="p-4">
@@ -768,14 +903,16 @@ export default function Home() {
               {/* SL/TP for manual trade */}
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <div>
-                  <label className="text-[9px] text-zinc-500 uppercase">Stop Loss ($)</label>
-                  <input type="number" value={tradeSL} onChange={(e) => setTradeSL(e.target.value)} step="0.01" placeholder="Optional"
+                  <label className="text-[9px] text-zinc-500 uppercase">Stop Loss ($ or %)</label>
+                  <input type="number" value={tradeSL} onChange={(e) => setTradeSL(e.target.value)} step="0.01" placeholder="0.05 for 0.05%"
                     className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-red-500/50" />
+                  <div className="text-[8px] text-zinc-600 mt-0.5">&lt;1 = %, else $</div>
                 </div>
                 <div>
-                  <label className="text-[9px] text-zinc-500 uppercase">Take Profit ($)</label>
-                  <input type="number" value={tradeTP} onChange={(e) => setTradeTP(e.target.value)} step="0.01" placeholder="Optional"
+                  <label className="text-[9px] text-zinc-500 uppercase">Take Profit ($ or %)</label>
+                  <input type="number" value={tradeTP} onChange={(e) => setTradeTP(e.target.value)} step="0.01" placeholder="0.15 for 0.15%"
                     className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-emerald-500/50" />
+                  <div className="text-[8px] text-zinc-600 mt-0.5">&lt;1 = %, else $</div>
                 </div>
               </div>
 

@@ -292,8 +292,27 @@ async function runBotCheck(): Promise<void> {
             create: { position: newPos, currentRSI: state.currentRSI ?? 0, currentSMA: state.currentSMA ?? 0 },
             update: { position: newPos },
           });
+          // Log auto-trade to TradeLog
+          await db.tradeLog.create({
+            data: {
+              source: 'AUTO',
+              orderType, price: currentPrice, quantity: config.quantity, leverage: config.leverage,
+              slPrice: sl, tpPrice: tp, slPercent: config.slPercent, tpPercent: config.tpPercent,
+              orderId: result.order_id || null, status: 'FILLED',
+              result: `${signal.type} @ $${signal.price.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`,
+            },
+          });
         } else {
           tradeResultMsg += `${signal.type} failed: ${result.error}`;
+          // Log failed auto-trade
+          await db.tradeLog.create({
+            data: {
+              source: 'AUTO',
+              orderType, price: currentPrice, quantity: config.quantity, leverage: config.leverage,
+              slPrice: sl, tpPrice: tp, slPercent: config.slPercent, tpPercent: config.tpPercent,
+              status: 'FAILED', result: result.error || 'Unknown error',
+            },
+          });
         }
       }
       engineState.lastTradeResult = tradeResultMsg;

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { db } from '@/lib/db';
 
 const MUDREX_API = 'https://trade.mudrex.com/fapi/v1/futures';
 const SECRET_KEY = process.env.MUDREX_SECRET_KEY;
@@ -21,6 +22,8 @@ export async function POST(request: Request) {
       is_takeprofit = false,
       order_price,
       symbol = 'XAUUSDT',
+      sl_percent,
+      tp_percent,
     } = body;
 
     if (!order_type || !['LONG', 'SHORT'].includes(order_type)) {
@@ -69,12 +72,38 @@ export async function POST(request: Request) {
 
     if (!res.ok || !json.success) {
       console.error(`[Mudrex] Order failed:`, json);
+      // Log failed manual trade
+      await db.tradeLog.create({
+        data: {
+          source: 'MANUAL', orderType: order_type, price: Number(order_price),
+          quantity: Number(quantity), leverage: Number(leverage),
+          slPrice: stoploss_price ? Number(stoploss_price) : null,
+          tpPrice: takeprofit_price ? Number(takeprofit_price) : 0,
+          slPercent: sl_percent ? Number(sl_percent) : null,
+          tpPercent: tp_percent ? Number(tp_percent) : null,
+          status: 'FAILED', result: json.message || `API error: ${res.status}`,
+        },
+      }).catch(() => {});
       return NextResponse.json({
         success: false,
         error: json.message || `Mudrex API error: ${res.status}`,
         details: json,
       }, { status: res.ok ? 400 : res.status });
     }
+
+    // Log successful manual trade
+    await db.tradeLog.create({
+      data: {
+        source: 'MANUAL', orderType: order_type, price: Number(order_price),
+        quantity: Number(quantity), leverage: Number(leverage),
+        slPrice: stoploss_price ? Number(stoploss_price) : null,
+        tpPrice: takeprofit_price ? Number(takeprofit_price) : 0,
+        slPercent: sl_percent ? Number(sl_percent) : null,
+        tpPercent: tp_percent ? Number(tp_percent) : null,
+        orderId: json.data?.order_id || null, status: 'FILLED',
+        result: `${order_type} @ $${Number(order_price).toFixed(2)} SL=${stoploss_price ? '$' + Number(stoploss_price).toFixed(2) : 'none'} TP=${takeprofit_price ? '$' + Number(takeprofit_price).toFixed(2) : 'none'}`,
+      },
+    }).catch(() => {});
 
     console.log(`[Mudrex] Order placed: ${json.data?.order_id}`);
     return NextResponse.json(json);

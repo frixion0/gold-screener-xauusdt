@@ -35,6 +35,23 @@ model Signal {
   createdAt  DateTime @default(now())
 }
 
+model TradeLog {
+  id           Int      @id @default(autoincrement())
+  source       String   @default("MANUAL") // AUTO or MANUAL
+  orderType    String   // LONG or SHORT
+  price        Float
+  quantity     Float
+  leverage     Int
+  slPrice      Float?
+  tpPrice      Float
+  slPercent    Float?
+  tpPercent    Float?
+  orderId      String?
+  status       String   @default("FILLED") // FILLED, FAILED
+  result       String?
+  createdAt    DateTime @default(now())
+}
+
 model BotState {
   id                Int      @id @default(1)
   position          String   @default("NEUTRAL")

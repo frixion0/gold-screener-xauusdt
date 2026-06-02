@@ -253,6 +253,11 @@ export default function GoldChart({ data, lastFetchTime }: GoldChartProps) {
 
     return () => {
       resizeObserver.disconnect();
+      // Null refs BEFORE removing so the next initChart won't try to double-remove
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      chartRef.current = null;
+      rsiChartRef.current = null;
       chart.remove();
       rsiChart.remove();
     };

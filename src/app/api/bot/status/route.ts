@@ -50,6 +50,7 @@ export async function GET() {
         nextCheckAt: engine.nextCheckAt,
         lastResult: engine.lastResult,
         lastTradeResult: engine.lastTradeResult,
+        lastDesiredAction: engine.lastDesiredAction,
         checkCount: engine.checkCount,
         errorCount: engine.errorCount,
         isRunning: engine.isRunning,

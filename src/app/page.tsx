@@ -52,6 +52,7 @@ interface BotStatus {
     nextCheckAt: string | null;
     lastResult: string | null;
     lastTradeResult: string | null;
+    lastDesiredAction: string | null;
     checkCount: number;
     errorCount: number;
     isRunning: boolean;
@@ -428,13 +429,20 @@ export default function Home() {
   // Client-side RSI calculation from fetched kline data
   const { rsiPoints, signals: clientSignals } = runStrategy(klineData, 1, 14);
   const latestRSI = rsiPoints.length > 0 ? rsiPoints[rsiPoints.length - 1] : null;
-  const recentClientSignals = clientSignals.slice(-2).reverse(); // Last 2 signals
-  const recentDBSignals = signals.slice(0, 2); // Latest 2 from DB
+  // Only show signals from the last 30 minutes (not stale historical ones)
+  const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+  const recentClientSignals = clientSignals
+    .filter(s => s.candleTime * 1000 > thirtyMinAgo)
+    .slice(-2).reverse();
+  const recentDBSignals = signals
+    .filter(s => new Date(s.createdAt).getTime() > thirtyMinAgo)
+    .slice(0, 2);
   // Show client signals if available, otherwise fall back to DB signals
   const displaySignals: Array<{ type: string; price: number; rsi: number; rsiSma: number; candleTime: number; createdAt?: string; id?: number; source: 'client' | 'db' }> =
     recentClientSignals.length > 0
       ? recentClientSignals.map(s => ({ ...s, source: 'client' as const }))
       : recentDBSignals.map(s => ({ ...s, source: 'db' as const }));
+  const hasRecentSignals = displaySignals.length > 0;
 
   return (
     <div className="min-h-screen bg-[#080b12] text-white">
@@ -486,7 +494,7 @@ export default function Home() {
               <span className="text-zinc-600">|</span>
               <span>Interval: <span className="text-yellow-400">10s</span></span>
               <span className="text-zinc-600">|</span>
-              <span>Strategy: <span className="text-purple-400">RSI(1) + SMA(14)</span></span>
+              <span>Strategy: <span className={`text-purple-400`}>{activeStrategy === 'RSI' ? 'RSI(1) + SMA(14)' : 'Candle Pattern (S2)'}</span></span>
             </div>
             <button onClick={() => { fetchKlines(); fetchBotStatus(); fetchSignals(); fetchBroker(); }} disabled={isRefreshing}
               className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-yellow-400 transition-colors disabled:opacity-50">
@@ -527,7 +535,7 @@ export default function Home() {
           {/* Bot Status Cards */}
           <BotCard icon={botStatus?.active ? <Radio className="w-4 h-4 text-emerald-400" /> : <WifiOff className="w-4 h-4 text-red-400" />}
             label="Bot Engine" value={botStatus?.active ? 'AUTO-RUNNING' : botStatus ? 'OFFLINE' : '---'}
-            subtext={botStatus?.engine?.lastCheckAt ? `Last: ${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago (${botStatus.engine.checkCount}x)` : 'Waiting to start'}
+            subtext={botStatus?.engine?.lastCheckAt ? `Check #${botStatus.engine.checkCount}: ${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago` : 'Waiting to start'}
             subtextClass={botStatus?.active ? 'text-emerald-400' : 'text-red-400'} />
           <BotCard icon={<Bot className={`w-4 h-4 ${botStatus?.position === 'LONG' ? 'text-emerald-400' : botStatus?.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}`} />}
             label="Position" value={botStatus?.position || 'NEUTRAL'}
@@ -535,8 +543,17 @@ export default function Home() {
             subtextClass={botStatus?.position === 'LONG' ? 'text-emerald-400' : 'text-zinc-500'} />
         </div>
 
-        {/* Recent Signals Banner — shows latest signals (client-side or DB fallback) */}
-        {displaySignals.length > 0 && (
+        {/* Recent Signals Banner — shows latest signals (only from last 30 min) */}
+        {!hasRecentSignals && signals.length > 0 ? (
+          <div className="mb-4 px-4 py-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/30">
+            <div className="flex items-center gap-2 text-xs text-zinc-500">
+              <Bot className="w-3.5 h-3.5" />
+              <span>No signals in the last 30 min</span>
+              <span className="text-zinc-600">—</span>
+              <span>{signals.length} total signals in history</span>
+            </div>
+          </div>
+        ) : hasRecentSignals ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
             {displaySignals.map((sig, i) => (
               <div key={sig.source === 'db' ? `db-${sig.id}` : `client-${i}`} className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${
@@ -568,7 +585,7 @@ export default function Home() {
               </div>
             ))}
           </div>
-        )}
+        ) : null}
 
         {/* Main Chart */}
         <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden shadow-2xl shadow-black/40 mb-4">
@@ -792,7 +809,7 @@ export default function Home() {
                 <Activity className="w-4 h-4 text-yellow-400" />
                 <span className="text-sm font-semibold">Recent Trades</span>
                 <Badge variant="outline" className="text-[10px] border-yellow-500/30 text-yellow-400">
-                  {recentTrades.length > 0 ? 'Live' : 'No trades yet'}
+                  {recentTrades.length > 0 && (Date.now() - new Date(recentTrades[0].createdAt).getTime()) < 60 * 60 * 1000 ? 'Live' : recentTrades.length > 0 ? 'Past' : 'No trades yet'}
                 </Badge>
               </div>
               {recentTrades.length === 0 ? (
@@ -909,6 +926,27 @@ export default function Home() {
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${autoTrade ? 'translate-x-5' : 'translate-x-0.5'}`} />
                 </button>
               </div>
+
+              {/* Bot Engine Status */}
+              {botStatus?.engine?.lastResult && (
+                <div className="p-2 rounded-lg border border-zinc-800/40 bg-zinc-900/40 mb-3 space-y-1">
+                  <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold">Bot Engine Status</div>
+                  <div className="text-[10px] text-zinc-400 font-mono truncate" title={botStatus.engine.lastResult}>
+                    {botStatus.engine.lastResult}
+                  </div>
+                  {botStatus.engine.lastTradeResult && (
+                    <div className={`text-[10px] font-mono truncate ${botStatus.engine.lastTradeResult.includes('✅') ? 'text-emerald-400' : botStatus.engine.lastTradeResult.includes('failed') || botStatus.engine.lastTradeResult.includes('FAILED') ? 'text-red-400' : 'text-zinc-500'}`} title={botStatus.engine.lastTradeResult}>
+                      Trade: {botStatus.engine.lastTradeResult}
+                    </div>
+                  )}
+                  {botStatus.engine.lastDesiredAction && (
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      Desired: <span className={botStatus.engine.lastDesiredAction === 'LONG' ? 'text-emerald-400' : botStatus.engine.lastDesiredAction === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>{botStatus.engine.lastDesiredAction}</span>
+                      → Current: <span className={botStatus.position === 'LONG' ? 'text-emerald-400' : botStatus.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>{botStatus.position || 'NEUTRAL'}</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Strategy Selector */}
               <div className="p-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/60 mb-3">

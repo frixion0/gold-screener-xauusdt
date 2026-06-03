@@ -1,6 +1,6 @@
 // Self-Scheduling Bot Engine
-// Runs strategy checks autonomously every ~3 minutes (aligned with 3m candle closes)
-// When autoTrade is ON, compares desired position with current position and trades accordingly
+// RSI strategy: checks every 3 minutes (aligned to candle closes)
+// CANDLE strategy: checks every 30 seconds (fast response to direction changes)
 
 import { db } from './db';
 import { runStrategy, getCurrentState } from './rsi';
@@ -15,8 +15,10 @@ const LIMIT = 200;
 const RSI_LENGTH = 1;
 const SMA_LENGTH = 14;
 
-// Check every 3 minutes to align with candle closes
-const CHECK_INTERVAL_MS = 3 * 60 * 1000;
+// CANDLE strategy checks every 30 seconds for fast response
+const CANDLE_CHECK_MS = 30 * 1000;
+// RSI strategy checks every 3 minutes
+const RSI_CHECK_MS = 3 * 60 * 1000;
 
 interface EngineState {
   isRunning: boolean;
@@ -29,6 +31,8 @@ interface EngineState {
   errorCount: number;
   autoTrade: boolean;
   lastDesiredAction: string | null;
+  lastTradedCandleTime: number | null;
+  currentIntervalMs: number;
 }
 
 const engineState: EngineState = {
@@ -42,6 +46,8 @@ const engineState: EngineState = {
   errorCount: 0,
   autoTrade: false,
   lastDesiredAction: null,
+  lastTradedCandleTime: null,
+  currentIntervalMs: RSI_CHECK_MS,
 };
 
 let intervalRef: ReturnType<typeof setInterval> | null = null;
@@ -152,7 +158,7 @@ async function placeMudrexOrder(params: {
  * Close existing position via Mudrex reduce_only order
  */
 async function closeMudrexPosition(params: {
-  order_type: 'LONG' | 'SHORT'; // opposite of current position
+  order_type: 'LONG' | 'SHORT';
   order_price: number;
   quantity: number;
   leverage: number;
@@ -200,23 +206,41 @@ async function closeMudrexPosition(params: {
 }
 
 async function runBotCheck(): Promise<void> {
-  if (engineState.isRunning) return; // Skip if previous check is still running
+  if (engineState.isRunning) return;
   engineState.isRunning = true;
 
   try {
-    // Read auto-trade config from DB
+    // Read config from DB — this is the SNAPSHOT before any strategy updates
     const botConfig = await db.botState.findUnique({ where: { id: 1 } });
     engineState.autoTrade = botConfig?.autoTrade ?? false;
     const activeStrategy = botConfig?.strategy ?? 'RSI';
+    const currentPos = botConfig?.position || 'NEUTRAL'; // Position BEFORE this check
+
+    // Dynamically adjust interval based on strategy
+    const newInterval = activeStrategy === 'CANDLE' ? CANDLE_CHECK_MS : RSI_CHECK_MS;
+    if (newInterval !== engineState.currentIntervalMs) {
+      engineState.currentIntervalMs = newInterval;
+      // Restart interval with new timing
+      if (intervalRef) {
+        clearInterval(intervalRef);
+        intervalRef = setInterval(() => {
+          runBotCheck();
+          engineState.nextCheckAt = new Date(Date.now() + engineState.currentIntervalMs).toISOString();
+        }, engineState.currentIntervalMs);
+        console.log(`[Bot Engine] Interval changed to ${engineState.currentIntervalMs / 1000}s for ${activeStrategy} strategy`);
+      }
+    }
 
     const candles = await fetchKlines();
     if (candles.length < 20) {
       throw new Error(`Not enough candles: ${candles.length}`);
     }
-    const currentPrice = candles[candles.length - 1]?.close ?? 0;
-    // Use the PREVIOUS candle (already completed) for signal determination
-    // The latest candle from Binance API is the currently forming one
-    const checkCandle = candles.length > 1 ? candles[candles.length - 2] : candles[candles.length - 1];
+
+    // For CANDLE strategy: use the LATEST candle (currently forming) for immediate response
+    // For RSI strategy: use the last completed candle for accurate crossover detection
+    const latestCandle = candles[candles.length - 1];
+    const prevCandle = candles.length > 1 ? candles[candles.length - 2] : latestCandle;
+    const currentPrice = latestCandle?.close ?? 0;
 
     // ========================================
     // STEP 1: Determine desired position from strategy
@@ -225,51 +249,58 @@ async function runBotCheck(): Promise<void> {
     let signalPrice = currentPrice;
     let signalRSI = 0;
     let signalSMA = 0;
-    let signalCandleTime = checkCandle?.time ?? 0;
+    let signalCandleTime = 0;
+    let candleDirection = ''; // for logging
 
     if (activeStrategy === 'CANDLE') {
-      // Strategy 2: Close > Open → LONG, Close < Open → SHORT
-      if (checkCandle) {
-        const isBullish = checkCandle.close > checkCandle.open;
-        desiredAction = isBullish ? 'LONG' : 'SHORT';
-        signalPrice = checkCandle.close;
-        signalCandleTime = checkCandle.time;
-        console.log(`[Bot Engine] CANDLE strategy: close=$${checkCandle.close.toFixed(2)} open=$${checkCandle.open.toFixed(2)} → ${desiredAction}`);
+      // Strategy 2: Use the CURRENT forming candle
+      // If close > open (green) → LONG, if close < open (red) → SHORT
+      if (latestCandle) {
+        const isBullish = latestCandle.close > latestCandle.open;
+        const isDoji = Math.abs(latestCandle.close - latestCandle.open) < 0.01;
+        desiredAction = isDoji ? currentPos as 'LONG' | 'SHORT' | 'NEUTRAL' : (isBullish ? 'LONG' : 'SHORT');
+        signalPrice = latestCandle.close;
+        signalCandleTime = latestCandle.time;
+        candleDirection = isBullish ? 'GREEN (close>open)' : isDoji ? 'DOJI' : 'RED (close<open)';
+
+        console.log(`[Bot Engine] CANDLE: ${candleDirection} | close=$${latestCandle.close.toFixed(2)} open=$${latestCandle.open.toFixed(2)} → desired=${desiredAction}`);
       }
 
-      // Store CANDLE signal in DB (for logging) — check if this candle already has a signal
-      const existingSignal = await db.signal.findFirst({
-        where: { candleTime: signalCandleTime, type: { startsWith: '[S2]' } },
-      });
-      if (!existingSignal) {
-        await db.signal.create({
-          data: {
-            type: `[S2] ${desiredAction === 'LONG' ? 'BUY' : 'SELL'}`,
-            price: signalPrice,
-            rsi: 0,
-            rsiSma: 0,
-            candleTime: signalCandleTime,
-          },
+      // Store signal in DB only once per candle (dedup by candleTime)
+      if (signalCandleTime > 0 && signalCandleTime !== engineState.lastTradedCandleTime) {
+        const existingSignal = await db.signal.findFirst({
+          where: { candleTime: signalCandleTime, type: { startsWith: '[S2]' } },
         });
-        console.log(`[Bot Engine] Stored CANDLE signal: ${desiredAction} @ $${signalPrice.toFixed(2)}`);
+        if (!existingSignal) {
+          await db.signal.create({
+            data: {
+              type: `[S2] ${desiredAction === 'LONG' ? 'BUY' : 'SELL'}`,
+              price: signalPrice,
+              rsi: 0,
+              rsiSma: 0,
+              candleTime: signalCandleTime,
+            },
+          });
+          console.log(`[Bot Engine] Stored CANDLE signal: ${desiredAction} @ $${signalPrice.toFixed(2)}`);
+        }
       }
 
-      // Update bot state with CANDLE strategy info
+      // Update bot state — ONLY the lastPing and strategy, NOT position
+      // Position is updated ONLY after successful trades to avoid sync issues
       await db.botState.upsert({
         where: { id: 1 },
         create: {
-          position: desiredAction,
+          position: 'NEUTRAL',
           currentRSI: 0,
           currentSMA: 0,
           lastPing: new Date(),
           strategy: 'CANDLE',
         },
         update: {
-          position: desiredAction,
-          currentRSI: 0,
-          currentSMA: 0,
           lastPing: new Date(),
           strategy: 'CANDLE',
+          currentRSI: 0,
+          currentSMA: 0,
         },
       });
     } else {
@@ -277,15 +308,13 @@ async function runBotCheck(): Promise<void> {
       const { signals } = runStrategy(candles, RSI_LENGTH, SMA_LENGTH);
       const state = getCurrentState(candles, RSI_LENGTH, SMA_LENGTH);
 
-      // desiredAction from RSI state
-      // getCurrentState returns LONG (after BUY) or NEUTRAL (after SELL or initial)
       desiredAction = state.position === 'LONG' ? 'LONG' : 'NEUTRAL';
       signalRSI = state.currentRSI ?? 0;
       signalSMA = state.currentSMA ?? 0;
 
-      console.log(`[Bot Engine] RSI strategy: position=${state.position}, RSI=${signalRSI.toFixed(1)}, SMA=${signalSMA.toFixed(1)} → desired=${desiredAction}`);
+      console.log(`[Bot Engine] RSI: position=${state.position}, RSI=${signalRSI.toFixed(1)}, SMA=${signalSMA.toFixed(1)} → desired=${desiredAction}`);
 
-      // Store RSI crossover signals in DB (for logging/history)
+      // Store RSI crossover signals in DB
       for (const signal of signals) {
         const exists = await db.signal.findFirst({
           where: { candleTime: signal.candleTime, type: signal.type },
@@ -300,22 +329,20 @@ async function runBotCheck(): Promise<void> {
               candleTime: signal.candleTime,
             },
           });
-          console.log(`[Bot Engine] Stored RSI signal: ${signal.type} @ $${signal.price.toFixed(2)} (RSI=${signal.rsi.toFixed(1)}, SMA=${signal.rsiSma.toFixed(1)})`);
         }
       }
 
-      // Update bot state with RSI values
+      // Update bot state — ONLY lastPing, strategy, and RSI values, NOT position
       await db.botState.upsert({
         where: { id: 1 },
         create: {
-          position: state.position,
+          position: 'NEUTRAL',
           currentRSI: signalRSI,
           currentSMA: signalSMA,
           lastPing: new Date(),
           strategy: 'RSI',
         },
         update: {
-          position: state.position,
           currentRSI: signalRSI,
           currentSMA: signalSMA,
           lastPing: new Date(),
@@ -329,7 +356,6 @@ async function runBotCheck(): Promise<void> {
     // ========================================
     // STEP 2: Auto-trade — compare desired vs current position
     // ========================================
-    let currentPos = botConfig?.position || 'NEUTRAL';
     let tradeResultMsg = '';
 
     if (engineState.autoTrade && currentPrice > 0) {
@@ -340,12 +366,11 @@ async function runBotCheck(): Promise<void> {
         tpPercent: botConfig?.takeprofitPercent ?? 0.15,
       };
 
-      console.log(`[Bot Engine] Auto-trade check: desired=${desiredAction}, current=${currentPos}, autoTrade=${engineState.autoTrade}`);
+      console.log(`[Bot Engine] AUTO-TRADE: desired=${desiredAction} vs current=${currentPos} | strategy=${activeStrategy}`);
 
       if (desiredAction === currentPos) {
         // Already in correct position — no action needed
-        tradeResultMsg = `Position correct (${desiredAction}) — no trade needed`;
-        console.log(`[Bot Engine] ${tradeResultMsg}`);
+        tradeResultMsg = `Position correct (${desiredAction}) — holding`;
       } else if (desiredAction === 'NEUTRAL' && currentPos !== 'NEUTRAL') {
         // Strategy says close position
         const closeType = currentPos === 'LONG' ? 'SHORT' : 'LONG';
@@ -359,37 +384,26 @@ async function runBotCheck(): Promise<void> {
         });
 
         if (closeResult.success) {
-          tradeResultMsg = `Closed ${currentPos} @ $${currentPrice.toFixed(2)} (strategy → NEUTRAL)`;
-          currentPos = 'NEUTRAL';
+          tradeResultMsg = `Closed ${currentPos} @ $${currentPrice.toFixed(2)}`;
           await db.botState.upsert({
             where: { id: 1 },
-            create: { position: 'NEUTRAL', currentRSI: 0, currentSMA: 0 },
+            create: { position: 'NEUTRAL' },
             update: { position: 'NEUTRAL' },
           });
           await db.tradeLog.create({
             data: {
-              source: 'AUTO',
-              orderType: closeType,
-              price: currentPrice,
-              quantity: config.quantity,
-              leverage: config.leverage,
-              slPrice: null,
-              tpPrice: 0,
-              slPercent: null,
-              tpPercent: null,
-              status: 'FILLED',
-              result: `[${activeStrategy}] CLOSE ${currentPos} @ $${currentPrice.toFixed(2)}`,
+              source: 'AUTO', orderType: closeType, price: currentPrice,
+              quantity: config.quantity, leverage: config.leverage,
+              slPrice: null, tpPrice: 0, slPercent: null, tpPercent: null,
+              status: 'FILLED', result: `[${activeStrategy}] CLOSE ${currentPos} @ $${currentPrice.toFixed(2)}`,
             },
           });
-          console.log(`[Bot Engine] ${tradeResultMsg}`);
         } else {
           tradeResultMsg = `Close ${currentPos} failed: ${closeResult.error}`;
-          console.error(`[Bot Engine] ${tradeResultMsg}`);
         }
-      } else {
-        // desiredAction is LONG or SHORT, and it differs from currentPos
-        const isBuy = desiredAction === 'LONG';
+      } else if (desiredAction === 'LONG' || desiredAction === 'SHORT') {
         const orderType = desiredAction;
+        const isBuy = orderType === 'LONG';
 
         // Calculate SL/TP
         const sl = isBuy
@@ -399,10 +413,10 @@ async function runBotCheck(): Promise<void> {
           ? currentPrice * (1 + config.tpPercent / 100)
           : currentPrice * (1 - config.tpPercent / 100);
 
-        // Step 2a: Close opposite position if we have one
+        // Close opposite position if we have one
         if (currentPos !== 'NEUTRAL') {
           const closeType = currentPos === 'LONG' ? 'SHORT' : 'LONG';
-          console.log(`[Bot Engine] Closing opposite ${currentPos} before opening ${desiredAction}`);
+          console.log(`[Bot Engine] Closing ${currentPos} before opening ${orderType}`);
 
           const closeResult = await closeMudrexPosition({
             order_type: closeType,
@@ -413,28 +427,22 @@ async function runBotCheck(): Promise<void> {
 
           if (closeResult.success) {
             tradeResultMsg += `Closed ${currentPos}; `;
-            currentPos = 'NEUTRAL';
             await db.botState.upsert({
               where: { id: 1 },
-              create: { position: 'NEUTRAL', currentRSI: 0, currentSMA: 0 },
+              create: { position: 'NEUTRAL' },
               update: { position: 'NEUTRAL' },
             });
-            // Small delay before opening new position
             await new Promise(resolve => setTimeout(resolve, 1000));
           } else {
             tradeResultMsg += `Close ${currentPos} failed: ${closeResult.error}; `;
-            console.error(`[Bot Engine] Failed to close ${currentPos}, skipping new order`);
-            // Don't open new position if close failed
+            console.error(`[Bot Engine] Close failed, skipping new order`);
             engineState.lastTradeResult = tradeResultMsg;
-            engineState.checkCount++;
-            engineState.lastCheckAt = new Date().toISOString();
-            engineState.lastResult = `OK — pos=${currentPos}, desired=${desiredAction}, strategy=${activeStrategy} (close failed)`;
             return;
           }
         }
 
-        // Step 2b: Place the new order
-        console.log(`[Bot Engine] Placing ${orderType} order @ $${currentPrice.toFixed(2)} (SL=$${sl.toFixed(2)}, TP=$${tp.toFixed(2)})`);
+        // Place the new order
+        console.log(`[Bot Engine] Placing ${orderType} @ $${currentPrice.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`);
 
         const result = await placeMudrexOrder({
           order_type: orderType,
@@ -446,71 +454,52 @@ async function runBotCheck(): Promise<void> {
         });
 
         if (result.success) {
-          tradeResultMsg += `${orderType} @ $${currentPrice.toFixed(2)} (SL=$${sl.toFixed(2)}, TP=$${tp.toFixed(2)})`;
-          currentPos = orderType;
+          tradeResultMsg += `${orderType} @ $${currentPrice.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`;
+          engineState.lastTradedCandleTime = signalCandleTime;
           await db.botState.upsert({
             where: { id: 1 },
-            create: { position: currentPos, currentRSI: 0, currentSMA: 0 },
-            update: { position: currentPos },
+            create: { position: orderType },
+            update: { position: orderType },
           });
-          // Log auto-trade to TradeLog
           await db.tradeLog.create({
             data: {
-              source: 'AUTO',
-              orderType,
-              price: currentPrice,
-              quantity: config.quantity,
-              leverage: config.leverage,
-              slPrice: sl,
-              tpPrice: tp,
-              slPercent: config.slPercent,
-              tpPercent: config.tpPercent,
-              orderId: result.order_id || null,
-              status: 'FILLED',
+              source: 'AUTO', orderType, price: currentPrice,
+              quantity: config.quantity, leverage: config.leverage,
+              slPrice: sl, tpPrice: tp, slPercent: config.slPercent, tpPercent: config.tpPercent,
+              orderId: result.order_id || null, status: 'FILLED',
               result: `[${activeStrategy}] ${orderType} @ $${currentPrice.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`,
             },
           });
-          console.log(`[Bot Engine] Trade placed successfully: ${tradeResultMsg}`);
+          console.log(`[Bot Engine] TRADE SUCCESS: ${tradeResultMsg}`);
         } else {
-          tradeResultMsg += `${orderType} failed: ${result.error}`;
+          tradeResultMsg += `${orderType} FAILED: ${result.error}`;
           await db.tradeLog.create({
             data: {
-              source: 'AUTO',
-              orderType,
-              price: currentPrice,
-              quantity: config.quantity,
-              leverage: config.leverage,
-              slPrice: sl,
-              tpPrice: tp,
-              slPercent: config.slPercent,
-              tpPercent: config.tpPercent,
-              status: 'FAILED',
-              result: result.error || 'Unknown error',
+              source: 'AUTO', orderType, price: currentPrice,
+              quantity: config.quantity, leverage: config.leverage,
+              slPrice: sl, tpPrice: tp, slPercent: config.slPercent, tpPercent: config.tpPercent,
+              status: 'FAILED', result: result.error || 'Unknown error',
             },
           });
-          console.error(`[Bot Engine] Trade failed: ${tradeResultMsg}`);
+          console.error(`[Bot Engine] TRADE FAILED: ${tradeResultMsg}`);
         }
       }
       engineState.lastTradeResult = tradeResultMsg;
     } else if (!engineState.autoTrade) {
       engineState.lastTradeResult = 'Auto-trade OFF';
-    } else {
-      engineState.lastTradeResult = 'No price data';
     }
 
     // Update lastPing
     await db.botState.upsert({
       where: { id: 1 },
       create: { lastPing: new Date(), strategy: activeStrategy },
-      update: { lastPing: new Date(), strategy: activeStrategy },
+      update: { lastPing: new Date() },
     });
 
     engineState.checkCount++;
     engineState.lastCheckAt = new Date().toISOString();
-    engineState.lastResult = `OK — pos=${currentPos}, desired=${desiredAction}, strategy=${activeStrategy}`;
+    engineState.lastResult = `${activeStrategy}: desired=${desiredAction} vs pos=${currentPos} | ${candleDirection || `RSI=${signalRSI.toFixed(1)} SMA=${signalSMA.toFixed(1)}`}`;
     engineState.errorCount = 0;
-
-    console.log(`[Bot Engine] Check #${engineState.checkCount} complete: ${engineState.lastResult}`);
   } catch (error) {
     engineState.errorCount++;
     engineState.lastCheckAt = new Date().toISOString();
@@ -521,18 +510,8 @@ async function runBotCheck(): Promise<void> {
   }
 }
 
-// Align first check to the nearest 3-minute candle boundary
-function getMsToNextCandle(): number {
-  const now = Date.now();
-  const threeMin = 3 * 60 * 1000;
-  const msIntoCandle = now % threeMin;
-  // Wait until the candle closes plus a 5-second buffer for data availability
-  return msIntoCandle === 0 ? 5000 : (threeMin - msIntoCandle + 5000);
-}
-
 /**
- * Start the bot engine — sets up recurring checks every 3 minutes
- * Aligned to candle close times for accurate signal detection
+ * Start the bot engine — first check in 3 seconds, then recurring
  */
 export function startBotEngine(): void {
   if (intervalRef) {
@@ -541,21 +520,21 @@ export function startBotEngine(): void {
   }
 
   engineState.startedAt = new Date().toISOString();
-  engineState.nextCheckAt = new Date(Date.now() + getMsToNextCandle()).toISOString();
-  console.log(`[Bot Engine] Starting — first check in ~${Math.round(getMsToNextCandle() / 1000)}s (aligned to candle close), then every ${CHECK_INTERVAL_MS / 1000}s`);
+  const initialDelay = 3000; // 3 seconds — fast startup
+  engineState.nextCheckAt = new Date(Date.now() + initialDelay).toISOString();
+  console.log(`[Bot Engine] Starting — first check in ${initialDelay / 1000}s, then CANDLE=30s / RSI=3min`);
 
-  // Initial check immediately (slight delay to let server warm up)
+  // First check after short delay
   setTimeout(() => {
     runBotCheck().then(() => {
-      engineState.nextCheckAt = new Date(Date.now() + CHECK_INTERVAL_MS).toISOString();
-      // Schedule recurring checks aligned to 3-min intervals
+      // Start recurring checks
       intervalRef = setInterval(() => {
         runBotCheck();
-        engineState.nextCheckAt = new Date(Date.now() + CHECK_INTERVAL_MS).toISOString();
-      }, CHECK_INTERVAL_MS);
-      console.log('[Bot Engine] Recurring checks started (every 3 minutes)');
+        engineState.nextCheckAt = new Date(Date.now() + engineState.currentIntervalMs).toISOString();
+      }, engineState.currentIntervalMs);
+      console.log(`[Bot Engine] Recurring checks started (every ${engineState.currentIntervalMs / 1000}s)`);
     });
-  }, 2000);
+  }, initialDelay);
 }
 
 /**
@@ -573,7 +552,6 @@ export async function forceCheck(): Promise<{ ok: boolean; state: ReturnType<typ
   const { rsiPoints, signals } = runStrategy(candles, RSI_LENGTH, SMA_LENGTH);
   const state = getCurrentState(candles, RSI_LENGTH, SMA_LENGTH);
 
-  // Store new signals
   for (const signal of signals) {
     const exists = await db.signal.findFirst({
       where: { candleTime: signal.candleTime, type: signal.type },
@@ -591,7 +569,6 @@ export async function forceCheck(): Promise<{ ok: boolean; state: ReturnType<typ
     }
   }
 
-  // Update bot state
   await db.botState.upsert({
     where: { id: 1 },
     create: {

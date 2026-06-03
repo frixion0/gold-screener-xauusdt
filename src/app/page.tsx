@@ -57,6 +57,8 @@ interface BotStatus {
     errorCount: number;
     isRunning: boolean;
     autoTrade: boolean;
+    currentIntervalMs: number;
+    lastTradedCandleTime: number | null;
   };
 }
 
@@ -930,19 +932,30 @@ export default function Home() {
               {/* Bot Engine Status */}
               {botStatus?.engine?.lastResult && (
                 <div className="p-2 rounded-lg border border-zinc-800/40 bg-zinc-900/40 mb-3 space-y-1">
-                  <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold">Bot Engine Status</div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold">Bot Engine</div>
+                    <div className="text-[9px] font-mono text-zinc-600">
+                      {botStatus.engine.currentIntervalMs === 30000 ? '30s' : '3min'} interval
+                    </div>
+                  </div>
                   <div className="text-[10px] text-zinc-400 font-mono truncate" title={botStatus.engine.lastResult}>
                     {botStatus.engine.lastResult}
                   </div>
                   {botStatus.engine.lastTradeResult && (
-                    <div className={`text-[10px] font-mono truncate ${botStatus.engine.lastTradeResult.includes('✅') ? 'text-emerald-400' : botStatus.engine.lastTradeResult.includes('failed') || botStatus.engine.lastTradeResult.includes('FAILED') ? 'text-red-400' : 'text-zinc-500'}`} title={botStatus.engine.lastTradeResult}>
+                    <div className={`text-[10px] font-mono truncate ${botStatus.engine.lastTradeResult.includes('SUCCESS') || botStatus.engine.lastTradeResult.includes('✅') || botStatus.engine.lastTradeResult.includes('Closed') ? 'text-emerald-400' : botStatus.engine.lastTradeResult.includes('FAILED') || botStatus.engine.lastTradeResult.includes('failed') || botStatus.engine.lastTradeResult.includes('Error') ? 'text-red-400' : 'text-zinc-500'}`} title={botStatus.engine.lastTradeResult}>
                       Trade: {botStatus.engine.lastTradeResult}
                     </div>
                   )}
                   {botStatus.engine.lastDesiredAction && (
-                    <div className="text-[10px] font-mono text-zinc-500">
-                      Desired: <span className={botStatus.engine.lastDesiredAction === 'LONG' ? 'text-emerald-400' : botStatus.engine.lastDesiredAction === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>{botStatus.engine.lastDesiredAction}</span>
-                      → Current: <span className={botStatus.position === 'LONG' ? 'text-emerald-400' : botStatus.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>{botStatus.position || 'NEUTRAL'}</span>
+                    <div className="text-[10px] font-mono">
+                      <span className="text-zinc-600">Want:</span>{' '}
+                      <span className={botStatus.engine.lastDesiredAction === 'LONG' ? 'text-emerald-400' : botStatus.engine.lastDesiredAction === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>
+                        {botStatus.engine.lastDesiredAction}
+                      </span>
+                      <span className="text-zinc-600"> {'→'} Have:</span>{' '}
+                      <span className={botStatus.position === 'LONG' ? 'text-emerald-400' : botStatus.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>
+                        {botStatus.position || 'NEUTRAL'}
+                      </span>
                     </div>
                   )}
                 </div>

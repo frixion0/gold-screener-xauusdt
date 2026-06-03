@@ -55,8 +55,8 @@ model TradeLog {
 model BotState {
   id                Int      @id @default(1)
   position          String   @default("NEUTRAL")
-  currentRSI        Float
-  currentSMA        Float
+  currentRSI        Float    @default(0)
+  currentSMA        Float    @default(0)
   updatedAt         DateTime @updatedAt
   lastPing          DateTime @default(now())
   autoTrade         Boolean  @default(false)

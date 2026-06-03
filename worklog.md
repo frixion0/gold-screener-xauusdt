@@ -28,3 +28,26 @@ Stage Summary:
 - Professional dark trading UI with TradingView lightweight-charts
 - GitHub push attempted but provided token is invalid/expired
 - Created push-to-github.sh helper script for when user has a valid token
+
+---
+Task ID: 1
+Agent: main
+Task: Fix bot not placing trades when auto-trade is ON, fix stale signal display
+
+Work Log:
+- Diagnosed root cause: bot-engine.ts only traded when `newSignals.length > 0`, but RSI signals were deduped (already in DB from previous cycles), so `newSignals` was always empty
+- Also found CANDLE strategy type mismatch: DB stored `[S2] BUY` but dedup checked for `BUY`
+- Also found signal display showed historical signals as "live"
+- Rewrote bot-engine.ts runBotCheck() to compare desired position vs current position instead of relying on new signals
+- For RSI: uses getCurrentState() to determine LONG/NEUTRAL
+- For CANDLE: uses last completed candle direction (close > open → LONG, close < open → SHORT)
+- Auto-trade now: if desired != current → close opposite + open new; if desired == current → no action
+- Fixed CANDLE strategy dedup using candleTime + type prefix
+- Updated page.tsx: signal banner only shows last 30 min signals, "Live" badge time-based, added Bot Engine Status panel
+- Updated /api/bot/status to include lastDesiredAction
+- Build passed, pushed to GitHub
+
+Stage Summary:
+- Bot will now correctly place trades when auto-trade is ON and strategy position differs from current position
+- Signal display no longer shows stale historical signals
+- User can see bot engine status (last result, trade result, desired vs current position) for debugging

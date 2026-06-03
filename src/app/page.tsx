@@ -189,6 +189,17 @@ export default function Home() {
       setLastFetch(new Date());
       setError(null);
       fetchCountRef.current += 1;
+
+      // Relay kline data to server so bot engine can use it on Render
+      // (Binance blocks cloud IPs, but browser fetch works fine)
+      try {
+        const relayData = data.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close, volume: k.volume }));
+        fetch('/api/klines/relay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candles: relayData }),
+        }).catch(() => { /* relay failure is non-critical */ });
+      } catch { /* relay failure is non-critical */ }
     } catch (_err) {
       if (!isBackground) setError('Failed to load market data. Retrying...');
     } finally {

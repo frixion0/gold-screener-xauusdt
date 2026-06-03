@@ -1,12 +1,14 @@
 // Self-Scheduling Bot Engine
 // RSI strategy: checks every 3 minutes (aligned to candle closes)
 // CANDLE strategy: checks every 30 seconds (fast response to direction changes)
+//
+// KEY FIX: Interval ALWAYS starts regardless of first-check success/failure
+// KEY FIX: Multiple Binance proxy fallbacks + client-side kline relay
 
 import { db } from './db';
 import { runStrategy, getCurrentState } from './rsi';
 
 const BINANCE_FUTURES_URL = 'https://fapi.binance.com/fapi/v1/klines';
-const PROXY_URL = 'https://api.allorigins.win/raw?url=';
 const MUDREX_API = 'https://trade.mudrex.com/fapi/v1/futures';
 const SECRET_KEY = 'v33dnrb92FKBSMTVUxJ6ufeW7cBBEmmK';
 const SYMBOL = 'XAUUSDT';
@@ -19,6 +21,22 @@ const SMA_LENGTH = 14;
 const CANDLE_CHECK_MS = 30 * 1000;
 // RSI strategy checks every 3 minutes
 const RSI_CHECK_MS = 3 * 60 * 1000;
+
+// Multiple CORS proxy fallbacks for Binance on cloud hosts
+const PROXIES = [
+  'https://api.allorigins.win/raw?url=',
+  'https://corsproxy.io/?',
+  'https://api.codetabs.com/v1/proxy?quest=',
+];
+
+interface KlineData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
 interface EngineState {
   isRunning: boolean;
@@ -33,6 +51,8 @@ interface EngineState {
   lastDesiredAction: string | null;
   lastTradedCandleTime: number | null;
   currentIntervalMs: number;
+  lastFetchError: string | null;
+  relayFreshnessMs: number;
 }
 
 const engineState: EngineState = {
@@ -48,14 +68,24 @@ const engineState: EngineState = {
   lastDesiredAction: null,
   lastTradedCandleTime: null,
   currentIntervalMs: RSI_CHECK_MS,
+  lastFetchError: null,
+  relayFreshnessMs: -1,
 };
 
 let intervalRef: ReturnType<typeof setInterval> | null = null;
 
-async function fetchKlines(): Promise<{ time: number; open: number; high: number; low: number; close: number; volume: number }[]> {
-  const url = `${BINANCE_FUTURES_URL}?symbol=${SYMBOL}&interval=${INTERVAL}&limit=${LIMIT}`;
+// Relay cache: client-side POSTs klines here when server fetch fails
+let relayCache: { candles: KlineData[]; updatedAt: number } | null = null;
 
-  // Try direct fetch first
+/**
+ * Store relay klines (called by /api/klines/relay when client sends data)
+ */
+export function storeRelayKlines(candles: KlineData[]): void {
+  relayCache = { candles, updatedAt: Date.now() };
+  console.log(`[Bot Engine] Relay cache updated with ${candles.length} candles from client`);
+}
+
+async function fetchKlinesDirect(url: string): Promise<KlineData[] | null> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (response.ok) {
@@ -69,30 +99,65 @@ async function fetchKlines(): Promise<{ time: number; open: number; high: number
         volume: parseFloat(String(k[5])),
       }));
     }
-  } catch {
-    // Direct fetch failed (IP blocked on cloud hosts), try proxy
+  } catch (err) {
+    console.error(`[Fetch] Direct failed: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+  return null;
+}
+
+async function fetchKlines(): Promise<KlineData[]> {
+  const url = `${BINANCE_FUTURES_URL}?symbol=${SYMBOL}&interval=${INTERVAL}&limit=${LIMIT}`;
+
+  // 1. Try direct fetch
+  const direct = await fetchKlinesDirect(url);
+  if (direct && direct.length > 0) {
+    engineState.lastFetchError = null;
+    return direct;
   }
 
-  // Fallback: use CORS proxy
-  try {
-    const proxyUrl = `${PROXY_URL}${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) });
-    if (response.ok) {
-      const data = await response.json();
-      return data.map((k: (string | number)[]) => ({
-        time: Math.floor(Number(k[0]) / 1000),
-        open: parseFloat(String(k[1])),
-        high: parseFloat(String(k[2])),
-        low: parseFloat(String(k[3])),
-        close: parseFloat(String(k[4])),
-        volume: parseFloat(String(k[5])),
-      }));
+  // 2. Try each CORS proxy in order
+  for (const proxy of PROXIES) {
+    const proxyUrl = `${proxy}${encodeURIComponent(url)}`;
+    console.log(`[Fetch] Trying proxy: ${proxy.split('/')[2]}`);
+    try {
+      const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+      if (response.ok) {
+        try {
+          const data = await response.json();
+          if (Array.isArray(data) && data.length > 0) {
+            const candles = data.map((k: (string | number)[]) => ({
+              time: Math.floor(Number(k[0]) / 1000),
+              open: parseFloat(String(k[1])),
+              high: parseFloat(String(k[2])),
+              low: parseFloat(String(k[3])),
+              close: parseFloat(String(k[4])),
+              volume: parseFloat(String(k[5])),
+            }));
+            engineState.lastFetchError = null;
+            console.log(`[Fetch] Success via proxy ${proxy.split('/')[2]}: ${candles.length} candles`);
+            return candles;
+          }
+        } catch {
+          console.error(`[Fetch] Proxy ${proxy.split('/')[2]} returned invalid JSON`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Fetch] Proxy ${proxy.split('/')[2]} failed: ${err instanceof Error ? err.message : 'unknown'}`);
     }
-  } catch {
-    // Proxy also failed
   }
 
-  throw new Error('Failed to fetch kline data from Binance (direct + proxy)');
+  // 3. Fallback: use relay cache (client-side data)
+  if (relayCache && relayCache.candles.length > 0) {
+    const age = Date.now() - relayCache.updatedAt;
+    engineState.relayFreshnessMs = age;
+    console.log(`[Fetch] Using relay cache (${Math.round(age / 1000)}s old, ${relayCache.candles.length} candles)`);
+    engineState.lastFetchError = `Using relay cache (${Math.round(age / 1000)}s old)`;
+    return relayCache.candles;
+  }
+
+  const errMsg = 'All fetch methods failed (direct + 3 proxies + relay empty)';
+  engineState.lastFetchError = errMsg;
+  throw new Error(errMsg);
 }
 
 /**
@@ -236,7 +301,7 @@ async function runBotCheck(): Promise<void> {
       throw new Error(`Not enough candles: ${candles.length}`);
     }
 
-    // For CANDLE strategy: use the LATEST candle (currently forming) for immediate response
+    // For CANDLE strategy: use the LAST COMPLETED candle for stable signals
     // For RSI strategy: use the last completed candle for accurate crossover detection
     const latestCandle = candles[candles.length - 1];
     const prevCandle = candles.length > 1 ? candles[candles.length - 2] : latestCandle;
@@ -253,25 +318,37 @@ async function runBotCheck(): Promise<void> {
     let candleDirection = ''; // for logging
 
     if (activeStrategy === 'CANDLE') {
-      // Strategy 2: Use the CURRENT forming candle
-      // If close > open (green) → LONG, if close < open (red) → SHORT
-      if (latestCandle) {
-        const isBullish = latestCandle.close > latestCandle.open;
-        const isDoji = Math.abs(latestCandle.close - latestCandle.open) < 0.01;
-        desiredAction = isDoji ? currentPos as 'LONG' | 'SHORT' | 'NEUTRAL' : (isBullish ? 'LONG' : 'SHORT');
-        signalPrice = latestCandle.close;
-        signalCandleTime = latestCandle.time;
-        candleDirection = isBullish ? 'GREEN (close>open)' : isDoji ? 'DOJI' : 'RED (close<open)';
+      // Strategy 2: Check the last completed candle (second to last = candles[n-2])
+      // The last candle in Binance response is the currently forming one
+      // We use the completed candle for a stable signal
+      const targetCandle = candles.length >= 2 ? candles[candles.length - 2] : candles[candles.length - 1];
 
-        console.log(`[Bot Engine] CANDLE: ${candleDirection} | close=$${latestCandle.close.toFixed(2)} open=$${latestCandle.open.toFixed(2)} → desired=${desiredAction}`);
+      if (targetCandle) {
+        const isBullish = targetCandle.close > targetCandle.open;
+        const spread = Math.abs(targetCandle.close - targetCandle.open);
+        // For gold at $2300+, a spread < $0.50 is noise (0.02%)
+        const isDoji = spread < 0.5;
+
+        if (isDoji) {
+          // Doji — no clear direction, hold current position
+          desiredAction = currentPos as 'LONG' | 'SHORT' | 'NEUTRAL';
+          candleDirection = `DOJI (spread=$${spread.toFixed(2)})`;
+        } else {
+          desiredAction = isBullish ? 'LONG' : 'SHORT';
+          candleDirection = isBullish ? 'GREEN (close>open)' : 'RED (close<open)';
+        }
+        signalPrice = targetCandle.close;
+        signalCandleTime = targetCandle.time;
+
+        console.log(`[Bot Engine] CANDLE: ${candleDirection} | close=$${targetCandle.close.toFixed(2)} open=$${targetCandle.open.toFixed(2)} → desired=${desiredAction}`);
       }
 
-      // Store signal in DB only once per candle (dedup by candleTime)
+      // Store signal in DB only once per completed candle (dedup by candleTime)
       if (signalCandleTime > 0 && signalCandleTime !== engineState.lastTradedCandleTime) {
         const existingSignal = await db.signal.findFirst({
           where: { candleTime: signalCandleTime, type: { startsWith: '[S2]' } },
         });
-        if (!existingSignal) {
+        if (!existingSignal && desiredAction !== 'NEUTRAL') {
           await db.signal.create({
             data: {
               type: `[S2] ${desiredAction === 'LONG' ? 'BUY' : 'SELL'}`,
@@ -285,8 +362,7 @@ async function runBotCheck(): Promise<void> {
         }
       }
 
-      // Update bot state — ONLY the lastPing and strategy, NOT position
-      // Position is updated ONLY after successful trades to avoid sync issues
+      // Update bot state — lastPing and strategy only, NOT position
       await db.botState.upsert({
         where: { id: 1 },
         create: {
@@ -332,7 +408,7 @@ async function runBotCheck(): Promise<void> {
         }
       }
 
-      // Update bot state — ONLY lastPing, strategy, and RSI values, NOT position
+      // Update bot state — lastPing, strategy, RSI values only, NOT position
       await db.botState.upsert({
         where: { id: 1 },
         create: {
@@ -503,15 +579,17 @@ async function runBotCheck(): Promise<void> {
   } catch (error) {
     engineState.errorCount++;
     engineState.lastCheckAt = new Date().toISOString();
-    engineState.lastResult = `ERROR: ${error instanceof Error ? error.message : 'Unknown'}`;
-    console.error(`[Bot Engine] Check #${engineState.checkCount} failed:`, error);
+    const errMsg = error instanceof Error ? error.message : 'Unknown';
+    engineState.lastResult = `ERROR: ${errMsg}`;
+    console.error(`[Bot Engine] Check #${engineState.checkCount} failed:`, errMsg);
   } finally {
     engineState.isRunning = false;
   }
 }
 
 /**
- * Start the bot engine — first check in 3 seconds, then recurring
+ * Start the bot engine
+ * CRITICAL FIX: Interval ALWAYS starts regardless of first-check success/failure
  */
 export function startBotEngine(): void {
   if (intervalRef) {
@@ -524,16 +602,17 @@ export function startBotEngine(): void {
   engineState.nextCheckAt = new Date(Date.now() + initialDelay).toISOString();
   console.log(`[Bot Engine] Starting — first check in ${initialDelay / 1000}s, then CANDLE=30s / RSI=3min`);
 
-  // First check after short delay
+  // ★ CRITICAL FIX: Start recurring interval IMMEDIATELY, not inside .then()
+  // This ensures the bot keeps checking even if the first check fails
+  intervalRef = setInterval(() => {
+    runBotCheck();
+    engineState.nextCheckAt = new Date(Date.now() + engineState.currentIntervalMs).toISOString();
+  }, engineState.currentIntervalMs);
+  console.log(`[Bot Engine] Recurring interval started (every ${engineState.currentIntervalMs / 1000}s)`);
+
+  // First check after short delay (fire-and-forget, interval is already running)
   setTimeout(() => {
-    runBotCheck().then(() => {
-      // Start recurring checks
-      intervalRef = setInterval(() => {
-        runBotCheck();
-        engineState.nextCheckAt = new Date(Date.now() + engineState.currentIntervalMs).toISOString();
-      }, engineState.currentIntervalMs);
-      console.log(`[Bot Engine] Recurring checks started (every ${engineState.currentIntervalMs / 1000}s)`);
-    });
+    runBotCheck();
   }, initialDelay);
 }
 

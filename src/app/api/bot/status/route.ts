@@ -57,6 +57,8 @@ export async function GET() {
         autoTrade: engine.autoTrade,
         currentIntervalMs: engine.currentIntervalMs,
         lastTradedCandleTime: engine.lastTradedCandleTime,
+        lastFetchError: engine.lastFetchError,
+        relayFreshnessMs: engine.relayFreshnessMs,
       },
     });
   } catch (error) {

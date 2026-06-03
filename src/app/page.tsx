@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff, Wallet, Target, AlertTriangle, DollarSign, Power, PowerOff, X } from 'lucide-react';
+import { Activity, TrendingUp, BarChart3, Clock, Zap, RefreshCw, Bot, ArrowUpCircle, ArrowDownCircle, Radio, Wifi, WifiOff, Wallet, Target, AlertTriangle, DollarSign, Power, PowerOff, X, Save, Shield, Gauge } from 'lucide-react';
 import { runStrategy } from '@/lib/rsi';
 
 const GoldChart = dynamic(() => import('@/components/GoldChart'), {
@@ -166,6 +166,7 @@ export default function Home() {
   const [autoSLPct, setAutoSLPct] = useState('0.05');
   const [autoTPPct, setAutoTPPct] = useState('0.15');
   const [testSignalLoading, setTestSignalLoading] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
 
   const fetchKlines = useCallback(async (isBackground = false) => {
     try {
@@ -386,6 +387,31 @@ export default function Home() {
       }
     } catch (err) {
       setTradeMsg(`Strategy switch failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  }, [autoTrade, tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
+
+  const saveSettings = useCallback(async () => {
+    setSettingsLoading(true);
+    setTradeMsg(null);
+    try {
+      const res = await fetch('/api/bot/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          autoTrade, quantity: parseFloat(tradeQty), leverage: parseInt(tradeLeverage),
+          stoplossPercent: parseFloat(autoSLPct), takeprofitPercent: parseFloat(autoTPPct),
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setTradeMsg(`Settings saved ✅ — SL: ${json.stoplossPercent}%, TP: ${json.takeprofitPercent}%`);
+      } else {
+        setTradeMsg(`Save failed: ${json.error}`);
+      }
+    } catch (err) {
+      setTradeMsg(`Save error: ${err instanceof Error ? err.message : 'Unknown'}`);
+    } finally {
+      setSettingsLoading(false);
     }
   }, [autoTrade, tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
 
@@ -621,6 +647,157 @@ export default function Home() {
               ) : (
                 <GoldChart data={klineData} lastFetchTime={lastFetch} />
               )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ====== LARGE Bot Engine Status Panel ====== */}
+        <Card className="border-zinc-800/60 bg-[#0d1117] overflow-hidden shadow-2xl shadow-black/40 mb-4">
+          <CardContent className="p-5 sm:p-6">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${botStatus?.active ? 'bg-emerald-500/15 border border-emerald-500/30' : 'bg-zinc-800 border border-zinc-700'}`}>
+                  {botStatus?.active
+                    ? <div className="relative"><Shield className="w-5 h-5 text-emerald-400" /><div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping" /><div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full" /></div>
+                    : <WifiOff className="w-5 h-5 text-zinc-500" />}
+                </div>
+                <div>
+                  <div className="text-base font-bold flex items-center gap-2">
+                    <span className={botStatus?.active ? 'text-emerald-400' : 'text-zinc-500'}>Bot Engine</span>
+                    <Badge variant="outline" className={`text-[10px] ${botStatus?.active ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10' : 'border-zinc-700 text-zinc-500 bg-zinc-800/50'}`}>
+                      {botStatus?.active ? '● RUNNING' : '○ OFFLINE'}
+                    </Badge>
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-0.5">
+                    {botStatus?.engine?.startedAt
+                      ? `Started ${new Date(botStatus.engine.startedAt).toLocaleString()}`
+                      : 'Not started yet'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <Badge variant="outline" className="border-purple-500/30 text-purple-400 text-xs px-3 py-1">
+                  {botStatus?.strategy === 'CANDLE' ? 'Candle Pattern' : 'RSI + SMA(14)'}
+                </Badge>
+                <Badge variant="outline" className="border-yellow-500/30 text-yellow-400 text-xs px-3 py-1">
+                  <Gauge className="w-3 h-3 mr-1" />
+                  {botStatus?.engine?.currentIntervalMs === 30000 ? '30s' : '3min'}
+                </Badge>
+              </div>
+            </div>
+
+            {/* Main Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* DB Position */}
+              <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/40">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">DB Position (Strategy)</div>
+                <div className={`text-2xl font-mono font-bold ${botStatus?.position === 'LONG' ? 'text-emerald-400' : botStatus?.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}`}>
+                  {botStatus?.position || 'NEUTRAL'}
+                </div>
+                <div className="text-xs text-zinc-500 mt-1">
+                  RSI: {botStatus?.currentRSI?.toFixed(1) ?? '---'} | SMA: {botStatus?.currentSMA?.toFixed(1) ?? '---'}
+                </div>
+              </div>
+
+              {/* Mudrex Actual Position */}
+              <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/40">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">Mudrex Actual Position</div>
+                {(() => {
+                  const xauPos = brokerPositions.find(p => p.symbol === 'XAUUSDT');
+                  const dbPos = botStatus?.position || 'NEUTRAL';
+                  const mudrexPos = xauPos ? xauPos.order_type : 'NONE';
+                  const isSynced = (dbPos === 'NEUTRAL' && !xauPos) || (xauPos && dbPos === xauPos.order_type);
+                  return (
+                    <>
+                      <div className={`text-2xl font-mono font-bold ${xauPos ? (xauPos.order_type === 'LONG' ? 'text-emerald-400' : 'text-red-400') : 'text-zinc-400'}`}>
+                        {xauPos ? xauPos.order_type : 'NONE'}
+                      </div>
+                      <div className={`text-xs mt-1 ${isSynced ? 'text-emerald-400' : 'text-orange-400'}`}>
+                        {isSynced ? '✓ Synced with DB' : '⚠ Mismatch detected'}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* Last Check Result */}
+              <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/40">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">Last Check Result</div>
+                <div className="text-sm font-mono text-zinc-300 break-all leading-relaxed">
+                  {botStatus?.engine?.lastResult || 'No checks yet'}
+                </div>
+              </div>
+
+              {/* Last Trade Result */}
+              <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/40">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">Last Trade Result</div>
+                <div className={`text-sm font-mono break-all leading-relaxed ${
+                  !botStatus?.engine?.lastTradeResult ? 'text-zinc-500' :
+                  botStatus.engine.lastTradeResult.includes('SUCCESS') || botStatus.engine.lastTradeResult.includes('✅') || botStatus.engine.lastTradeResult.includes('Closed') || botStatus.engine.lastTradeResult.includes('correct') || botStatus.engine.lastTradeResult.includes('holding')
+                    ? 'text-emerald-400'
+                    : botStatus.engine.lastTradeResult.includes('FAILED') || botStatus.engine.lastTradeResult.includes('failed') || botStatus.engine.lastTradeResult.includes('Error') || botStatus.engine.lastTradeResult.includes('error')
+                      ? 'text-red-400'
+                      : botStatus.engine.lastTradeResult.includes('OFF')
+                        ? 'text-zinc-500'
+                        : 'text-yellow-400'
+                }`}>
+                  {botStatus?.engine?.lastTradeResult || 'No trades yet'}
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Row */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-zinc-800/40">
+              {/* Desired Action */}
+              <div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Desired Action</div>
+                <div className={`text-lg font-mono font-bold ${
+                  botStatus?.engine?.lastDesiredAction === 'LONG' ? 'text-emerald-400' :
+                  botStatus?.engine?.lastDesiredAction === 'SHORT' ? 'text-red-400' :
+                  'text-zinc-400'
+                }`}>
+                  {botStatus?.engine?.lastDesiredAction || '---'}
+                </div>
+                <div className="text-[10px] text-zinc-600">
+                  → Current: <span className={botStatus?.position === 'LONG' ? 'text-emerald-400' : botStatus?.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>{botStatus?.position || 'NEUTRAL'}</span>
+                </div>
+              </div>
+
+              {/* Check Count */}
+              <div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Check Count</div>
+                <div className="text-lg font-mono font-bold text-zinc-300 tabular-nums">
+                  #{botStatus?.engine?.checkCount ?? 0}
+                </div>
+                <div className="text-[10px] text-zinc-600">
+                  Errors: <span className={botStatus?.engine?.errorCount ? 'text-red-400' : 'text-zinc-500'}>{botStatus?.engine?.errorCount ?? 0}</span>
+                </div>
+              </div>
+
+              {/* Interval */}
+              <div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Interval</div>
+                <div className="text-lg font-mono font-bold text-yellow-400 tabular-nums">
+                  {botStatus?.engine?.currentIntervalMs === 30000 ? '30s' : '3min'}
+                </div>
+                <div className="text-[10px] text-zinc-600">
+                  {botStatus?.engine?.currentIntervalMs === 30000 ? 'Candle strategy' : 'RSI strategy'}
+                </div>
+              </div>
+
+              {/* Last Check Time */}
+              <div>
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold mb-1">Last Check</div>
+                <div className="text-lg font-mono font-bold text-zinc-300 tabular-nums">
+                  {botStatus?.engine?.lastCheckAt
+                    ? `${Math.round((Date.now() - new Date(botStatus.engine.lastCheckAt).getTime()) / 1000)}s ago`
+                    : '---'}
+                </div>
+                <div className="text-[10px] text-zinc-600">
+                  {botStatus?.engine?.lastCheckAt && `Next: ${botStatus?.engine?.nextCheckAt ? new Date(botStatus.engine.nextCheckAt).toLocaleTimeString() : '---'}`}
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -938,37 +1115,30 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* Bot Engine Status */}
-              {botStatus?.engine?.lastResult && (
-                <div className="p-2 rounded-lg border border-zinc-800/40 bg-zinc-900/40 mb-3 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold">Bot Engine</div>
-                    <div className="text-[9px] font-mono text-zinc-600">
-                      {botStatus.engine.currentIntervalMs === 30000 ? '30s' : '3min'} interval
-                    </div>
+              {/* Auto-Trade Settings — SL/TP with Save */}
+              <div className="p-3 rounded-lg border border-yellow-500/20 bg-yellow-500/5 mb-3">
+                <div className="text-[10px] text-yellow-400 uppercase tracking-wider font-semibold mb-2">Auto-Trade Settings</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[9px] text-zinc-500 uppercase">SL %</label>
+                    <input type="number" value={autoSLPct} onChange={(e) => setAutoSLPct(e.target.value)} step="0.01" min="0.01"
+                      className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-red-400 focus:outline-none focus:border-red-500/50" />
                   </div>
-                  <div className="text-[10px] text-zinc-400 font-mono truncate" title={botStatus.engine.lastResult}>
-                    {botStatus.engine.lastResult}
+                  <div>
+                    <label className="text-[9px] text-zinc-500 uppercase">TP %</label>
+                    <input type="number" value={autoTPPct} onChange={(e) => setAutoTPPct(e.target.value)} step="0.01" min="0.01"
+                      className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-500/50" />
                   </div>
-                  {botStatus.engine.lastTradeResult && (
-                    <div className={`text-[10px] font-mono truncate ${botStatus.engine.lastTradeResult.includes('SUCCESS') || botStatus.engine.lastTradeResult.includes('✅') || botStatus.engine.lastTradeResult.includes('Closed') ? 'text-emerald-400' : botStatus.engine.lastTradeResult.includes('FAILED') || botStatus.engine.lastTradeResult.includes('failed') || botStatus.engine.lastTradeResult.includes('Error') ? 'text-red-400' : 'text-zinc-500'}`} title={botStatus.engine.lastTradeResult}>
-                      Trade: {botStatus.engine.lastTradeResult}
-                    </div>
-                  )}
-                  {botStatus.engine.lastDesiredAction && (
-                    <div className="text-[10px] font-mono">
-                      <span className="text-zinc-600">Want:</span>{' '}
-                      <span className={botStatus.engine.lastDesiredAction === 'LONG' ? 'text-emerald-400' : botStatus.engine.lastDesiredAction === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>
-                        {botStatus.engine.lastDesiredAction}
-                      </span>
-                      <span className="text-zinc-600"> {'→'} Have:</span>{' '}
-                      <span className={botStatus.position === 'LONG' ? 'text-emerald-400' : botStatus.position === 'SHORT' ? 'text-red-400' : 'text-zinc-400'}>
-                        {botStatus.position || 'NEUTRAL'}
-                      </span>
-                    </div>
-                  )}
                 </div>
-              )}
+                <button
+                  onClick={saveSettings}
+                  disabled={settingsLoading}
+                  className="w-full mt-2 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 font-mono font-bold text-xs hover:bg-yellow-500/20 transition-colors disabled:opacity-50"
+                >
+                  {settingsLoading ? <div className="w-3 h-3 border-2 border-yellow-500/30 border-t-yellow-500 rounded-full animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  Save Settings
+                </button>
+              </div>
 
               {/* Strategy Selector */}
               <div className="p-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/60 mb-3">
@@ -1037,25 +1207,6 @@ export default function Home() {
                   <div className="text-[8px] text-zinc-600 mt-0.5">&lt;1 = %, else $</div>
                 </div>
               </div>
-
-              {/* Auto-trade SL/TP % config */}
-              {autoTrade && (
-                <div className="p-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20 mb-3">
-                  <div className="text-[9px] text-emerald-400 uppercase tracking-wider font-semibold mb-1.5">Auto-Trade SL/TP %</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[9px] text-zinc-500">SL %</label>
-                      <input type="number" value={autoSLPct} onChange={(e) => setAutoSLPct(e.target.value)} step="0.1" min="0.1"
-                        className="w-full mt-0.5 px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-red-400 focus:outline-none focus:border-red-500/50" />
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-zinc-500">TP %</label>
-                      <input type="number" value={autoTPPct} onChange={(e) => setAutoTPPct(e.target.value)} step="0.1" min="0.1"
-                        className="w-full mt-0.5 px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-500/50" />
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* Buy/Sell Buttons */}
               <div className="grid grid-cols-2 gap-2">

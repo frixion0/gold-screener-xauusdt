@@ -307,12 +307,85 @@ async function closeMudrexPosition(): Promise<{ success: boolean; positionId?: s
   }
 }
 
+/**
+ * Sync DB position with actual Mudrex position to handle manual closes.
+ * This runs at the START of runBotCheck() before any strategy logic.
+ */
+async function syncPositionWithMudrex(): Promise<void> {
+  try {
+    const posRes = await fetch(`${MUDREX_API}/positions`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Authentication': SECRET_KEY,
+      },
+    });
+
+    if (!posRes.ok) {
+      console.error(`[Position Sync] Failed to fetch Mudrex positions: ${posRes.status}`);
+      return;
+    }
+
+    const posJson = await posRes.json();
+    const positions: Array<{ id: string; symbol: string; order_type: string; status: string }> = posJson.data || [];
+
+    const xauPosition = positions.find(
+      (p) => p.symbol === SYMBOL && (p.status === 'OPEN' || p.status === 'ACTIVE')
+    );
+
+    const botConfig = await db.botState.findUnique({ where: { id: 1 } });
+    const dbPosition = botConfig?.position || 'NEUTRAL';
+
+    if (!xauPosition && dbPosition !== 'NEUTRAL') {
+      // No XAUUSDT position on Mudrex but DB says LONG/SHORT → user closed manually
+      console.log(`[Position Sync] Mudrex has NO position but DB says ${dbPosition} → resetting to NEUTRAL (user closed manually)`);
+      await db.botState.upsert({
+        where: { id: 1 },
+        create: { position: 'NEUTRAL' },
+        update: { position: 'NEUTRAL' },
+      });
+    } else if (xauPosition && dbPosition === 'NEUTRAL') {
+      // Position exists on Mudrex but DB says NEUTRAL → sync to match actual
+      const actualType = xauPosition.order_type.toUpperCase();
+      console.log(`[Position Sync] Mudrex has ${actualType} but DB says NEUTRAL → updating DB to ${actualType}`);
+      await db.botState.upsert({
+        where: { id: 1 },
+        create: { position: actualType },
+        update: { position: actualType },
+      });
+    } else if (xauPosition && dbPosition !== 'NEUTRAL' && dbPosition !== xauPosition.order_type.toUpperCase()) {
+      // Mismatched directions — sync to actual
+      const actualType = xauPosition.order_type.toUpperCase();
+      console.log(`[Position Sync] Mismatch! DB says ${dbPosition} but Mudrex has ${actualType} → updating DB to ${actualType}`);
+      await db.botState.upsert({
+        where: { id: 1 },
+        create: { position: actualType },
+        update: { position: actualType },
+      });
+    } else {
+      // Both agree — no sync needed
+      if (dbPosition === 'NEUTRAL') {
+        console.log(`[Position Sync] DB=${dbPosition}, Mudrex=none → in sync ✓`);
+      } else {
+        console.log(`[Position Sync] DB=${dbPosition}, Mudrex=${xauPosition?.order_type || 'none'} → in sync ✓`);
+      }
+    }
+  } catch (err) {
+    console.error(`[Position Sync] Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+  }
+}
+
 async function runBotCheck(): Promise<void> {
   if (engineState.isRunning) return;
   engineState.isRunning = true;
 
   try {
-    // Read config from DB — this is the SNAPSHOT before any strategy updates
+    // ========================================
+    // STEP 0: Sync position with Mudrex BEFORE any strategy logic
+    // ========================================
+    await syncPositionWithMudrex();
+
+    // Read config from DB — this is the SNAPSHOT after position sync
     const botConfig = await db.botState.findUnique({ where: { id: 1 } });
     engineState.autoTrade = botConfig?.autoTrade ?? false;
     const activeStrategy = botConfig?.strategy ?? 'RSI';

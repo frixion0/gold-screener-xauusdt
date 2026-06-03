@@ -53,6 +53,7 @@ interface EngineState {
   currentIntervalMs: number;
   lastFetchError: string | null;
   relayFreshnessMs: number;
+  lastActedSignalCandleTime: number | null; // RSI strategy: track last crossover we acted on
 }
 
 const engineState: EngineState = {
@@ -70,6 +71,7 @@ const engineState: EngineState = {
   currentIntervalMs: RSI_CHECK_MS,
   lastFetchError: null,
   relayFreshnessMs: -1,
+  lastActedSignalCandleTime: null,
 };
 
 let intervalRef: ReturnType<typeof setInterval> | null = null;
@@ -426,6 +428,7 @@ async function runBotCheck(): Promise<void> {
     let signalSMA = 0;
     let signalCandleTime = 0;
     let candleDirection = ''; // for logging
+    let rsiNewSignal: { type: string; candleTime: number } | null = null; // track new RSI crossover
 
     if (activeStrategy === 'CANDLE') {
       // Strategy 2: Check the last completed candle (second to last = candles[n-2])
@@ -491,14 +494,35 @@ async function runBotCheck(): Promise<void> {
       });
     } else {
       // Strategy 1: RSI(1) + SMA(14)
+      // IMPORTANT: Only act on NEW crossover signals (not old ones)
+      // A crossover is "new" if its candleTime > lastActedSignalCandleTime
       const { signals } = runStrategy(candles, RSI_LENGTH, SMA_LENGTH);
       const state = getCurrentState(candles, RSI_LENGTH, SMA_LENGTH);
 
-      desiredAction = state.position === 'LONG' ? 'LONG' : 'NEUTRAL';
       signalRSI = state.currentRSI ?? 0;
       signalSMA = state.currentSMA ?? 0;
 
-      console.log(`[Bot Engine] RSI: position=${state.position}, RSI=${signalRSI.toFixed(1)}, SMA=${signalSMA.toFixed(1)} → desired=${desiredAction}`);
+      // Find the most recent NEW crossover signal (one we haven't acted on yet)
+      const newSignals = signals.filter(
+        (s) => engineState.lastActedSignalCandleTime === null || s.candleTime > engineState.lastActedSignalCandleTime
+      );
+      const latestNewSignal = newSignals.length > 0 ? newSignals[newSignals.length - 1] : null;
+
+      if (latestNewSignal) {
+        // New crossover detected! Set desired action based on signal type
+        rsiNewSignal = latestNewSignal;
+        if (latestNewSignal.type === 'BUY') {
+          desiredAction = 'LONG';
+          console.log(`[Bot Engine] RSI: NEW BUY crossover detected! candleTime=${latestNewSignal.candleTime} SMA=${latestNewSignal.rsiSma.toFixed(1)} → desired=LONG`);
+        } else if (latestNewSignal.type === 'SELL') {
+          desiredAction = 'NEUTRAL';
+          console.log(`[Bot Engine] RSI: NEW SELL crossover detected! candleTime=${latestNewSignal.candleTime} SMA=${latestNewSignal.rsiSma.toFixed(1)} → desired=NEUTRAL`);
+        }
+      } else {
+        // No new crossover — hold current DB position (don't change desiredAction)
+        desiredAction = currentPos as 'LONG' | 'SHORT' | 'NEUTRAL';
+        console.log(`[Bot Engine] RSI: No new crossover. SMA=${signalSMA.toFixed(1)} → holding ${currentPos}`);
+      }
 
       // Store RSI crossover signals in DB
       for (const signal of signals) {
@@ -565,6 +589,11 @@ async function runBotCheck(): Promise<void> {
 
         if (closeResult.success) {
           tradeResultMsg = `Closed ${currentPos}${closeResult.positionId ? ` (pos:${closeResult.positionId.slice(0, 8)}...)` : ''} @ $${currentPrice.toFixed(2)}`;
+          // For RSI strategy: mark SELL crossover as acted on
+          if (activeStrategy === 'RSI' && rsiNewSignal) {
+            engineState.lastActedSignalCandleTime = rsiNewSignal.candleTime;
+            console.log(`[Bot Engine] RSI: Marked SELL crossover candleTime=${rsiNewSignal.candleTime} as acted on`);
+          }
           await db.botState.upsert({
             where: { id: 1 },
             create: { position: 'NEUTRAL' },
@@ -631,6 +660,11 @@ async function runBotCheck(): Promise<void> {
         if (result.success) {
           tradeResultMsg += `${orderType} @ $${currentPrice.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`;
           engineState.lastTradedCandleTime = signalCandleTime;
+          // For RSI strategy: mark this crossover as acted on so we don't re-trade it
+          if (activeStrategy === 'RSI' && rsiNewSignal) {
+            engineState.lastActedSignalCandleTime = rsiNewSignal.candleTime;
+            console.log(`[Bot Engine] RSI: Marked crossover candleTime=${rsiNewSignal.candleTime} as acted on`);
+          }
           await db.botState.upsert({
             where: { id: 1 },
             create: { position: orderType },

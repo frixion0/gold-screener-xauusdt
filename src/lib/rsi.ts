@@ -1,7 +1,7 @@
 // RSI Strategy Engine
 // RSI Length: 1, SMA Length: 14
-// Buy: SMA crosses above 30 from below
-// Sell: SMA crosses below 70 from above
+// Buy: SMA crosses above 30 from below (crossover only)
+// Sell: SMA crosses below 70 from above (crossover only)
 
 export interface Signal {
   type: 'BUY' | 'SELL';
@@ -145,6 +145,13 @@ export function runStrategy(
 
 /**
  * Get current strategy state (for bot status)
+ *
+ * Walks through all crossover signals in order to determine position:
+ * - BUY signal → LONG
+ * - SELL signal → NEUTRAL
+ *
+ * The bot engine then checks: is there a NEW signal since the last acted signal?
+ * If yes → trade. If no → hold current position.
  */
 export function getCurrentState(
   candles: { time: number; close: number }[],
@@ -161,15 +168,11 @@ export function getCurrentState(
   const lastPoint = rsiPoints.length > 0 ? rsiPoints[rsiPoints.length - 1] : null;
   const lastSignal = signals.length > 0 ? signals[signals.length - 1] : null;
 
+  // Walk through all crossover signals to determine theoretical position
   let position: 'LONG' | 'SHORT' | 'NEUTRAL' = 'NEUTRAL';
-  if (signals.length > 0) {
-    // Walk through all signals to determine current position
-    let pos = 'NEUTRAL';
-    for (const sig of signals) {
-      if (sig.type === 'BUY') pos = 'LONG';
-      else if (sig.type === 'SELL') pos = 'NEUTRAL';
-    }
-    position = pos as 'LONG' | 'SHORT' | 'NEUTRAL';
+  for (const sig of signals) {
+    if (sig.type === 'BUY') position = 'LONG';
+    else if (sig.type === 'SELL') position = 'NEUTRAL';
   }
 
   return {

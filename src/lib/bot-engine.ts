@@ -205,34 +205,102 @@ async function runBotCheck(): Promise<void> {
     // Read auto-trade config from DB
     const botConfig = await db.botState.findUnique({ where: { id: 1 } });
     engineState.autoTrade = botConfig?.autoTrade ?? false;
+    const activeStrategy = botConfig?.strategy ?? 'RSI';
 
     const candles = await fetchKlines();
-    const { signals } = runStrategy(candles, RSI_LENGTH, SMA_LENGTH);
-    const state = getCurrentState(candles, RSI_LENGTH, SMA_LENGTH);
     const currentPrice = candles[candles.length - 1]?.close ?? 0;
+    const prevCandle = candles.length > 1 ? candles[candles.length - 2] : null;
+    const latestCandle = candles[candles.length - 1];
 
-    // Store new signals (avoid duplicates by candleTime + type)
-    let newSignals: typeof signals = [];
-    for (const signal of signals) {
-      const exists = await db.signal.findFirst({
-        where: { candleTime: signal.candleTime, type: signal.type },
-      });
-      if (!exists) {
-        await db.signal.create({
-          data: {
-            type: signal.type,
-            price: signal.price,
-            rsi: signal.rsi,
-            rsiSma: signal.rsiSma,
-            candleTime: signal.candleTime,
-          },
+    let newSignals: any[] = [];
+
+    if (activeStrategy === 'CANDLE') {
+      // Strategy 2: Close > Open → LONG, Close < Open → SHORT
+      if (latestCandle) {
+        const isBullish = latestCandle.close > latestCandle.open;
+        const signalType = isBullish ? 'BUY' : 'SELL';
+        const signal = {
+          type: signalType,
+          price: latestCandle.close,
+          rsi: 0,
+          rsiSma: 0,
+          candleTime: latestCandle.time,
+        };
+
+        // Only create signal if different from last stored signal (avoid duplicates every 3 min)
+        const lastSignal = await db.signal.findFirst({
+          where: { type: signalType },
+          orderBy: { createdAt: 'desc' },
         });
-        newSignals.push(signal);
+
+        // Only trade if this is a direction change OR no trade in last 3 candles
+        const threeCandlesAgo = latestCandle.time - (3 * 60);
+        const recentSignals = await db.signal.findMany({
+          where: { createdAt: { gte: new Date(threeCandlesAgo * 1000) } },
+        });
+        const hasRecentSameSignal = recentSignals.some(s => s.type === signalType);
+        const hasRecentOppositeSignal = recentSignals.some(s => s.type !== signalType);
+
+        if (!hasRecentSameSignal || hasRecentOppositeSignal) {
+          await db.signal.create({
+            data: {
+              type: `[S2] ${signalType}`,
+              price: signal.price,
+              rsi: 0,
+              rsiSma: 0,
+              candleTime: signal.candleTime,
+            },
+          });
+          newSignals.push(signal);
+        }
       }
+    } else {
+      // Strategy 1: RSI(1) + SMA(14)
+      const { signals } = runStrategy(candles, RSI_LENGTH, SMA_LENGTH);
+      const state = getCurrentState(candles, RSI_LENGTH, SMA_LENGTH);
+
+      for (const signal of signals) {
+        const exists = await db.signal.findFirst({
+          where: { candleTime: signal.candleTime, type: signal.type },
+        });
+        if (!exists) {
+          await db.signal.create({
+            data: {
+              type: signal.type,
+              price: signal.price,
+              rsi: signal.rsi,
+              rsiSma: signal.rsiSma,
+              candleTime: signal.candleTime,
+            },
+          });
+          newSignals.push(signal);
+        }
+      }
+
+      // Update bot state with RSI values
+      await db.botState.upsert({
+        where: { id: 1 },
+        create: {
+          position: state.position,
+          currentRSI: state.currentRSI ?? 0,
+          currentSMA: state.currentSMA ?? 0,
+          lastPing: new Date(),
+          strategy: activeStrategy,
+        },
+        update: {
+          position: state.position,
+          currentRSI: state.currentRSI ?? 0,
+          currentSMA: state.currentSMA ?? 0,
+          lastPing: new Date(),
+          strategy: activeStrategy,
+        },
+      });
     }
 
     // Auto-trade: execute new signals via Mudrex
     let tradeResultMsg = '';
+    let currentPos = botConfig?.position || 'NEUTRAL';
+
     if (engineState.autoTrade && newSignals.length > 0 && currentPrice > 0) {
       const config = {
         quantity: botConfig?.quantity ?? 0.002,
@@ -251,7 +319,7 @@ async function runBotCheck(): Promise<void> {
           : signal.price * (1 - config.tpPercent / 100);
 
         // If we have an opposite position, close it first
-        if ((isBuy && state.position === 'SHORT') || (!isBuy && state.position === 'LONG')) {
+        if ((isBuy && currentPos === 'SHORT') || (!isBuy && currentPos === 'LONG')) {
           const closeType = isBuy ? 'LONG' : 'SHORT';
           const closeResult = await closeMudrexPosition({
             order_type: closeType,
@@ -260,10 +328,10 @@ async function runBotCheck(): Promise<void> {
             leverage: config.leverage,
           });
           if (!closeResult.success) {
-            tradeResultMsg += `Close ${state.position} failed: ${closeResult.error}; `;
+            tradeResultMsg += `Close ${currentPos} failed: ${closeResult.error}; `;
           } else {
-            tradeResultMsg += `Closed ${state.position}; `;
-            // Update position to NEUTRAL after close
+            tradeResultMsg += `Closed ${currentPos}; `;
+            currentPos = 'NEUTRAL';
             await db.botState.upsert({
               where: { id: 1 },
               create: { position: 'NEUTRAL', currentRSI: 0, currentSMA: 0 },
@@ -285,12 +353,11 @@ async function runBotCheck(): Promise<void> {
 
         if (result.success) {
           tradeResultMsg += `${signal.type} @ $${signal.price.toFixed(2)} (SL=$${sl.toFixed(2)}, TP=$${tp.toFixed(2)}) ✅`;
-          // Update position
-          const newPos = isBuy ? 'LONG' : 'SHORT';
+          currentPos = isBuy ? 'LONG' : 'SHORT';
           await db.botState.upsert({
             where: { id: 1 },
-            create: { position: newPos, currentRSI: state.currentRSI ?? 0, currentSMA: state.currentSMA ?? 0 },
-            update: { position: newPos },
+            create: { position: currentPos, currentRSI: 0, currentSMA: 0 },
+            update: { position: currentPos },
           });
           // Log auto-trade to TradeLog
           await db.tradeLog.create({
@@ -299,12 +366,11 @@ async function runBotCheck(): Promise<void> {
               orderType, price: currentPrice, quantity: config.quantity, leverage: config.leverage,
               slPrice: sl, tpPrice: tp, slPercent: config.slPercent, tpPercent: config.tpPercent,
               orderId: result.order_id || null, status: 'FILLED',
-              result: `${signal.type} @ $${signal.price.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`,
+              result: `[${activeStrategy}] ${signal.type} @ $${signal.price.toFixed(2)} SL=$${sl.toFixed(2)} TP=$${tp.toFixed(2)}`,
             },
           });
         } else {
           tradeResultMsg += `${signal.type} failed: ${result.error}`;
-          // Log failed auto-trade
           await db.tradeLog.create({
             data: {
               source: 'AUTO',
@@ -320,31 +386,21 @@ async function runBotCheck(): Promise<void> {
       engineState.lastTradeResult = 'Auto-trade OFF';
     }
 
-    // Update bot state
+    // Update lastPing
     await db.botState.upsert({
       where: { id: 1 },
-      create: {
-        position: state.position,
-        currentRSI: state.currentRSI ?? 0,
-        currentSMA: state.currentSMA ?? 0,
-        lastPing: new Date(),
-      },
-      update: {
-        position: state.position,
-        currentRSI: state.currentRSI ?? 0,
-        currentSMA: state.currentSMA ?? 0,
-        lastPing: new Date(),
-      },
+      create: { lastPing: new Date(), strategy: activeStrategy },
+      update: { lastPing: new Date(), strategy: activeStrategy },
     });
 
     engineState.checkCount++;
     engineState.lastCheckAt = new Date().toISOString();
-    engineState.lastResult = `OK — ${signals.length} signals (${newSignals.length} new), pos=${state.position}, RSI=${state.currentRSI?.toFixed(1)}, SMA=${state.currentSMA?.toFixed(1)}`;
+    engineState.lastResult = `OK — ${newSignals.length} new signals, pos=${currentPos}, strategy=${activeStrategy}`;
     engineState.errorCount = 0;
 
-    if (signals.length > 0) {
-      const latest = signals[signals.length - 1];
-      console.log(`[Bot Engine] ${latest.type} signal @ $${latest.price.toFixed(2)} (RSI=${latest.rsi.toFixed(1)}, SMA=${latest.rsiSma.toFixed(1)})`);
+    if (newSignals.length > 0) {
+      const latest = newSignals[newSignals.length - 1];
+      console.log(`[Bot Engine] ${latest.type} signal @ $${latest.price.toFixed(2)} (${activeStrategy})`);
     }
   } catch (error) {
     engineState.errorCount++;

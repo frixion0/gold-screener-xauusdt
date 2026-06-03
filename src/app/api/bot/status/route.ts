@@ -19,8 +19,9 @@ export async function GET() {
         autoTrade: false,
         quantity: 0.002,
         leverage: 100,
-        stoplossPercent: 1,
-        takeprofitPercent: 2,
+        stoplossPercent: 0.05,
+        takeprofitPercent: 0.15,
+        strategy: 'RSI',
         engine,
       });
     }
@@ -42,6 +43,7 @@ export async function GET() {
       leverage: botState.leverage,
       stoplossPercent: botState.stoplossPercent,
       takeprofitPercent: botState.takeprofitPercent,
+      strategy: botState.strategy,
       engine: {
         startedAt: engine.startedAt,
         lastCheckAt: engine.lastCheckAt,

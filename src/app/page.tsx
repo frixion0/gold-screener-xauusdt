@@ -45,6 +45,7 @@ interface BotStatus {
   leverage: number;
   stoplossPercent: number;
   takeprofitPercent: number;
+  strategy: string;
   engine?: {
     startedAt: string | null;
     lastCheckAt: string | null;
@@ -152,6 +153,7 @@ export default function Home() {
 
   // Manual trade state
   const [autoTrade, setAutoTrade] = useState(false);
+  const [activeStrategy, setActiveStrategy] = useState('RSI');
   const [tradeLoading, setTradeLoading] = useState(false);
   const [tradeMsg, setTradeMsg] = useState<string | null>(null);
   const [tradeQty, setTradeQty] = useState('0.002');
@@ -200,6 +202,8 @@ export default function Home() {
         setBotStatus(data);
         // Sync autoTrade state from server
         setAutoTrade(data.autoTrade ?? false);
+        // Sync strategy from server
+        if (data.strategy) setActiveStrategy(data.strategy);
         // Sync trade config from server
         if (data.quantity) setTradeQty(String(data.quantity));
         if (data.leverage) setTradeLeverage(String(data.leverage));
@@ -352,6 +356,26 @@ export default function Home() {
       setTradeMsg(`Toggle failed: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
   }, [tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
+
+  const switchStrategy = useCallback(async (newStrategy: string) => {
+    try {
+      const res = await fetch('/api/bot/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          autoTrade, strategy: newStrategy, quantity: parseFloat(tradeQty), leverage: parseInt(tradeLeverage),
+          stoplossPercent: parseFloat(autoSLPct), takeprofitPercent: parseFloat(autoTPPct),
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setActiveStrategy(json.strategy);
+        setTradeMsg(`Strategy switched to ${json.strategy === 'RSI' ? 'RSI(1)+SMA(14)' : 'Candle Pattern'}${autoTrade ? ' — auto-trade active' : ''}`);
+      }
+    } catch (err) {
+      setTradeMsg(`Strategy switch failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+    }
+  }, [autoTrade, tradeQty, tradeLeverage, autoSLPct, autoTPPct]);
 
   const generateTestSignal = useCallback(async () => {
     if (klineData.length < 50) {
@@ -884,6 +908,44 @@ export default function Home() {
                 >
                   <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${autoTrade ? 'translate-x-5' : 'translate-x-0.5'}`} />
                 </button>
+              </div>
+
+              {/* Strategy Selector */}
+              <div className="p-2.5 rounded-lg border border-zinc-800/40 bg-zinc-900/60 mb-3">
+                <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mb-2">Strategy</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => switchStrategy('RSI')}
+                    disabled={tradeLoading}
+                    className={`py-2 px-3 rounded-lg text-xs font-mono font-bold transition-all ${
+                      activeStrategy === 'RSI'
+                        ? 'bg-purple-500/20 border border-purple-500/40 text-purple-400 shadow-md shadow-purple-500/10'
+                        : 'bg-zinc-900 border border-zinc-800 text-zinc-500 hover:border-purple-500/20 hover:text-purple-400'
+                    } ${tradeLoading ? 'opacity-50' : ''}`}
+                  >
+                    <div className="text-[10px]">Strategy 1</div>
+                    <div className="text-[9px] opacity-60">RSI + SMA</div>
+                  </button>
+                  <button
+                    onClick={() => switchStrategy('CANDLE')}
+                    disabled={tradeLoading}
+                    className={`py-2 px-3 rounded-lg text-xs font-mono font-bold transition-all ${
+                      activeStrategy === 'CANDLE'
+                        ? 'bg-blue-500/20 border border-blue-500/40 text-blue-400 shadow-md shadow-blue-500/10'
+                        : 'bg-zinc-900 border border-zinc-800 text-zinc-500 hover:border-blue-500/20 hover:text-blue-400'
+                    } ${tradeLoading ? 'opacity-50' : ''}`}
+                  >
+                    <div className="text-[10px]">Strategy 2</div>
+                    <div className="text-[9px] opacity-60">Candle Pattern</div>
+                  </button>
+                </div>
+                <div className={`mt-1.5 text-[8px] text-center ${
+                  activeStrategy === 'RSI' ? 'text-purple-400/50' : 'text-blue-400/50'
+                }`}>
+                  {activeStrategy === 'RSI'
+                    ? 'Buy when SMA crosses above 30 / Sell below 70'
+                    : 'Close > Open = LONG / Close < Open = SHORT'}
+                </div>
               </div>
 
               {/* Trade Config */}

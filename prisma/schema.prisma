@@ -64,4 +64,5 @@ model BotState {
   leverage          Int      @default(100)
   stoplossPercent   Float    @default(0.05)
   takeprofitPercent Float    @default(0.15)
+  strategy          String   @default("RSI") // RSI or CANDLE
 }

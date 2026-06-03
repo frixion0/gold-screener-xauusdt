@@ -3,6 +3,15 @@ import { NextResponse } from 'next/server';
 const MUDREX_API = 'https://trade.mudrex.com/fapi/v1/futures';
 const SECRET_KEY = 'v33dnrb92FKBSMTVUxJ6ufeW7cBBEmmK';
 
+/**
+ * Close a position using the dedicated Mudrex position_id close API.
+ * POST /api/broker/close
+ *
+ * Body can be:
+ *   { position_id: "uuid" }  — close by specific position_id
+ *   { symbol: "XAUUSDT" }    — fetch open positions and close the matching one
+ *   {}                       — close any open XAUUSDT position
+ */
 export async function POST(request: Request) {
   try {
     if (!SECRET_KEY) {
@@ -10,53 +19,97 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { order_type, quantity = 0.002, leverage = 100, order_price, symbol = 'XAUUSDT' } = body;
+    const { position_id, symbol = 'XAUUSDT' } = body;
 
-    if (!order_type || !['LONG', 'SHORT'].includes(order_type)) {
-      return NextResponse.json({ error: 'order_type must be LONG or SHORT (opposite of position to close)' }, { status: 400 });
+    // If position_id provided, close directly
+    if (position_id) {
+      console.log(`[Mudrex] Closing position_id=${position_id}`);
+      const res = await fetch(`${MUDREX_API}/positions/${position_id}/close`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Authentication': SECRET_KEY,
+        },
+      });
+
+      const json = await res.json();
+
+      if (json.success) {
+        console.log(`[Mudrex] Position closed: position_id=${json.data?.position_id}`);
+        return NextResponse.json(json);
+      } else {
+        console.error(`[Mudrex] Close failed:`, json);
+        return NextResponse.json({
+          success: false,
+          error: json.message || `Mudrex API error: ${res.status}`,
+          details: json,
+        }, { status: res.ok ? 400 : res.status });
+      }
     }
 
-    if (!order_price || order_price <= 0) {
-      return NextResponse.json({ error: 'order_price is required' }, { status: 400 });
+    // Otherwise: fetch open positions, find the matching one, close it
+    console.log(`[Mudrex] Fetching positions to close ${symbol}...`);
+
+    const posRes = await fetch(`${MUDREX_API}/positions`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Authentication': SECRET_KEY,
+      },
+    });
+
+    if (!posRes.ok) {
+      const text = await posRes.text();
+      return NextResponse.json({ error: `Fetch positions failed: ${posRes.status}`, details: text }, { status: posRes.status });
     }
 
-    // reduce_only order with opposite type to close existing position
-    const url = `${MUDREX_API}/${symbol}/order?is_symbol`;
-    const orderBody = {
-      leverage: Number(leverage),
-      quantity: Number(quantity),
-      order_price: Number(Math.round(order_price)),
-      order_type,
-      trigger_type: 'MARKET',
-      is_takeprofit: false,
-      is_stoploss: false,
-      reduce_only: true,
-    };
+    const posJson = await posRes.json();
+    const positions: Array<{ id: string; symbol: string; order_type: string; status: string }> = posJson.data || [];
 
-    console.log(`[Mudrex] Closing position with reduce_only order: ${JSON.stringify(orderBody)}`);
+    // Find the position for the symbol
+    const targetPosition = positions.find(
+      (p) => p.symbol === symbol && (p.status === 'OPEN' || p.status === 'ACTIVE')
+    );
 
-    const res = await fetch(url, {
+    if (!targetPosition) {
+      return NextResponse.json({
+        success: false,
+        error: `No open ${symbol} position found`,
+        existingPositions: positions.map(p => ({ id: p.id, symbol: p.symbol, type: p.order_type, status: p.status })),
+      });
+    }
+
+    console.log(`[Mudrex] Found position: id=${targetPosition.id}, type=${targetPosition.order_type}`);
+
+    // Close using dedicated position_id endpoint
+    const closeRes = await fetch(`${MUDREX_API}/positions/${targetPosition.id}/close`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Authentication': SECRET_KEY,
       },
-      body: JSON.stringify(orderBody),
     });
 
-    const json = await res.json();
+    const closeJson = await closeRes.json();
 
-    if (!res.ok || !json.success) {
-      console.error(`[Mudrex] Close failed:`, json);
+    if (closeJson.success) {
+      console.log(`[Mudrex] Position closed: position_id=${closeJson.data?.position_id}`);
+      return NextResponse.json({
+        success: true,
+        data: {
+          ...closeJson.data,
+          closed_position_type: targetPosition.order_type,
+          closed_symbol: targetPosition.symbol,
+        },
+      });
+    } else {
+      console.error(`[Mudrex] Close failed:`, closeJson);
       return NextResponse.json({
         success: false,
-        error: json.message || `Mudrex API error: ${res.status}`,
-        details: json,
-      }, { status: res.ok ? 400 : res.status });
+        error: closeJson.message || `Mudrex API error: ${closeRes.status}`,
+        details: closeJson,
+      }, { status: closeRes.ok ? 400 : closeRes.status });
     }
-
-    console.log(`[Mudrex] Position closed: ${json.data?.order_id}`);
-    return NextResponse.json(json);
   } catch (err) {
     console.error('[Mudrex] Close error:', err);
     return NextResponse.json({ error: 'Failed to close position', details: String(err) }, { status: 500 });

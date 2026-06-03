@@ -329,13 +329,11 @@ export default function Home() {
     setTradeLoading(true);
     setTradeMsg(null);
     try {
-      const price = latestCandle?.close || 0;
-      if (!price) { setTradeMsg('No price data'); setTradeLoading(false); return; }
-      const closeType = pos.order_type === 'LONG' ? 'SHORT' : 'LONG';
+      // Use the dedicated Mudrex position_id close API
       const res = await fetch('/api/broker/close', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ order_type: closeType, order_price: price, quantity: parseFloat(pos.quantity), leverage: parseInt(pos.leverage) }),
+        body: JSON.stringify({ position_id: pos.id }),
       });
       const json = await res.json();
       if (json.success) {
@@ -349,7 +347,7 @@ export default function Home() {
     } finally {
       setTradeLoading(false);
     }
-  }, [latestCandle, fetchBroker, klineData]);
+  }, [fetchBroker]);
 
   const toggleAutoTrade = useCallback(async (enable: boolean) => {
     try {

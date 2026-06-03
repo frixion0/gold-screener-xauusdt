@@ -220,52 +220,89 @@ async function placeMudrexOrder(params: {
 }
 
 /**
- * Close existing position via Mudrex reduce_only order
+ * Close existing position via Mudrex dedicated close-by-position_id API
+ * POST /futures/positions/{position_id}/close
+ * This is the proper way — placing opposite orders causes Mudrex to just
+ * close the existing position instead of opening a new one.
  */
-async function closeMudrexPosition(params: {
-  order_type: 'LONG' | 'SHORT';
-  order_price: number;
-  quantity: number;
-  leverage: number;
-}): Promise<{ success: boolean; error?: string }> {
+async function closeMudrexPositionByPositionId(positionId: string): Promise<{ success: boolean; error?: string }> {
   if (!SECRET_KEY) return { success: false, error: 'Mudrex API key not configured' };
 
-  const orderBody = {
-    leverage: params.leverage,
-    quantity: params.quantity,
-    order_price: Math.round(params.order_price),
-    order_type: params.order_type,
-    trigger_type: 'MARKET',
-    is_takeprofit: false,
-    is_stoploss: false,
-    reduce_only: true,
-  };
-
-  const url = `${MUDREX_API}/${SYMBOL}/order?is_symbol`;
+  const url = `${MUDREX_API}/positions/${positionId}/close`;
 
   try {
+    console.log(`[Mudrex] Closing position_id=${positionId}`);
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Authentication': SECRET_KEY,
       },
-      body: JSON.stringify(orderBody),
     });
 
     const json = await res.json();
 
     if (json.success) {
-      console.log(`[Mudrex] Position closed: order_id=${json.data?.order_id}`);
+      console.log(`[Mudrex] Position closed: position_id=${json.data?.position_id}, status=${json.data?.status}`);
       return { success: true };
     } else {
-      const errMsg = json.message || `API error: ${res.status}`;
+      const errMsg = json.message || `Close API error: ${res.status}`;
       console.error(`[Mudrex] Close failed: ${errMsg}`, json);
       return { success: false, error: errMsg };
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : 'Unknown error';
     console.error(`[Mudrex] Close error: ${errMsg}`);
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * Fetch open Mudrex positions and close any XAUUSDT position
+ * Returns the closed position info or error
+ */
+async function closeMudrexPosition(): Promise<{ success: boolean; positionId?: string; orderType?: string; error?: string }> {
+  if (!SECRET_KEY) return { success: false, error: 'Mudrex API key not configured' };
+
+  // Step 1: Fetch open positions to find the position_id
+  try {
+    const posRes = await fetch(`${MUDREX_API}/positions`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Authentication': SECRET_KEY,
+      },
+    });
+
+    if (!posRes.ok) {
+      return { success: false, error: `Fetch positions failed: ${posRes.status}` };
+    }
+
+    const posJson = await posRes.json();
+    const positions: Array<{ id: string; symbol: string; order_type: string; status: string }> = posJson.data || [];
+
+    // Find XAUUSDT open position
+    const xauPosition = positions.find(
+      (p) => p.symbol === SYMBOL && (p.status === 'OPEN' || p.status === 'ACTIVE')
+    );
+
+    if (!xauPosition) {
+      console.log(`[Mudrex] No open XAUUSDT position found — already closed or none exists`);
+      return { success: true, positionId: 'none' };
+    }
+
+    console.log(`[Mudrex] Found open position: id=${xauPosition.id}, type=${xauPosition.order_type}, status=${xauPosition.status}`);
+
+    // Step 2: Close using dedicated position_id endpoint
+    const closeResult = await closeMudrexPositionByPositionId(xauPosition.id);
+    if (closeResult.success) {
+      return { success: true, positionId: xauPosition.id, orderType: xauPosition.order_type };
+    } else {
+      return { success: false, error: closeResult.error };
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[Mudrex] Close position error: ${errMsg}`);
     return { success: false, error: errMsg };
   }
 }
@@ -449,18 +486,12 @@ async function runBotCheck(): Promise<void> {
         tradeResultMsg = `Position correct (${desiredAction}) — holding`;
       } else if (desiredAction === 'NEUTRAL' && currentPos !== 'NEUTRAL') {
         // Strategy says close position
-        const closeType = currentPos === 'LONG' ? 'SHORT' : 'LONG';
         console.log(`[Bot Engine] Closing ${currentPos} position (strategy says NEUTRAL)`);
 
-        const closeResult = await closeMudrexPosition({
-          order_type: closeType,
-          order_price: currentPrice,
-          quantity: config.quantity,
-          leverage: config.leverage,
-        });
+        const closeResult = await closeMudrexPosition();
 
         if (closeResult.success) {
-          tradeResultMsg = `Closed ${currentPos} @ $${currentPrice.toFixed(2)}`;
+          tradeResultMsg = `Closed ${currentPos}${closeResult.positionId ? ` (pos:${closeResult.positionId.slice(0, 8)}...)` : ''} @ $${currentPrice.toFixed(2)}`;
           await db.botState.upsert({
             where: { id: 1 },
             create: { position: 'NEUTRAL' },
@@ -468,7 +499,7 @@ async function runBotCheck(): Promise<void> {
           });
           await db.tradeLog.create({
             data: {
-              source: 'AUTO', orderType: closeType, price: currentPrice,
+              source: 'AUTO', orderType: currentPos === 'LONG' ? 'CLOSE_LONG' : 'CLOSE_SHORT', price: currentPrice,
               quantity: config.quantity, leverage: config.leverage,
               slPrice: null, tpPrice: 0, slPercent: null, tpPercent: null,
               status: 'FILLED', result: `[${activeStrategy}] CLOSE ${currentPos} @ $${currentPrice.toFixed(2)}`,
@@ -489,17 +520,11 @@ async function runBotCheck(): Promise<void> {
           ? currentPrice * (1 + config.tpPercent / 100)
           : currentPrice * (1 - config.tpPercent / 100);
 
-        // Close opposite position if we have one
+        // Close opposite position if we have one (using position_id API)
         if (currentPos !== 'NEUTRAL') {
-          const closeType = currentPos === 'LONG' ? 'SHORT' : 'LONG';
           console.log(`[Bot Engine] Closing ${currentPos} before opening ${orderType}`);
 
-          const closeResult = await closeMudrexPosition({
-            order_type: closeType,
-            order_price: currentPrice,
-            quantity: config.quantity,
-            leverage: config.leverage,
-          });
+          const closeResult = await closeMudrexPosition();
 
           if (closeResult.success) {
             tradeResultMsg += `Closed ${currentPos}; `;
@@ -508,7 +533,8 @@ async function runBotCheck(): Promise<void> {
               create: { position: 'NEUTRAL' },
               update: { position: 'NEUTRAL' },
             });
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Wait for close to settle before opening new position
+            await new Promise(resolve => setTimeout(resolve, 2000));
           } else {
             tradeResultMsg += `Close ${currentPos} failed: ${closeResult.error}; `;
             console.error(`[Bot Engine] Close failed, skipping new order`);
